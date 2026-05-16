@@ -42,6 +42,10 @@ local function findRuntimeCarAndValues()
 		local vehicle = carValue.Value
 		-- First, check for VOE_State folder (preferred)
 		local voeState = vehicle:FindFirstChild("VOE_State")
+		if not voeState then
+			-- Wait briefly for rig bootstrap to create VOE_State (race can occur during spawn)
+			voeState = vehicle:FindFirstChild("VOE_State") or vehicle:WaitForChild("VOE_State", 5)
+		end
 		if voeState then
 			return vehicle, voeState
 		end
@@ -159,6 +163,14 @@ function Fuel.create(context)
 		end
 	end
 
+	-- Expose shared values from VOE_State / legacy Values folder.
+	context.State.EngineOn = valuesFolder and valuesFolder:FindFirstChild("EngineOn") or nil
+	context.State.Running = valuesFolder and valuesFolder:FindFirstChild("Running") or nil
+	context.State.AccessoryOn = valuesFolder and valuesFolder:FindFirstChild("AccessoryOn") or nil
+	context.State.IgnitionStarting = valuesFolder and valuesFolder:FindFirstChild("IgnitionStarting") or nil
+	context.State.GasDoor = valuesFolder and valuesFolder:FindFirstChild("GasDoor") or nil
+	context.State.FuelCap = valuesFolder and valuesFolder:FindFirstChild("FuelCap") or nil
+
 	return setmetatable({
 		State = context.State,
 		VehicleModel = context.VehicleModel,
@@ -166,6 +178,25 @@ function Fuel.create(context)
 		Config = FuelConfig,
 		ValuesFolder = valuesFolder,
 	}, Fuel)
+end
+
+local function getEngineRunningState(state)
+	if state.EngineOn and state.EngineOn:IsA("BoolValue") then
+		return state.EngineOn.Value
+	end
+	if state.Running and state.Running:IsA("BoolValue") then
+		return state.Running.Value
+	end
+	return false
+end
+
+local function forceEngineOff(state)
+	if state.EngineOn and state.EngineOn:IsA("BoolValue") then
+		state.EngineOn.Value = false
+	end
+	if state.Running and state.Running:IsA("BoolValue") then
+		state.Running.Value = false
+	end
 end
 
 --====================================================================
@@ -256,7 +287,7 @@ end
 --====================================================================
 
 function Fuel:canRefuel()
-	if self.Config.AllowRefuelWhileEngineOn ~= true and self.State.EngineOn and self.State.EngineOn.Value then
+	if self.Config.AllowRefuelWhileEngineOn ~= true and getEngineRunningState(self.State) then
 		return false
 	end
 	if self.Config.RequireGasDoorOpen ~= false and self.State.GasDoor and self.State.GasDoor.Value ~= true then
@@ -303,9 +334,7 @@ function Fuel:applyEmptyBehavior()
 		end
 	else
 		self:clearEmptyBehavior()
-		if self.State.EngineOn then
-			self.State.EngineOn.Value = false
-		end
+		forceEngineOff(self.State)
 		if self.State.IgnitionStarting then
 			self.State.IgnitionStarting.Value = false
 		end
@@ -362,7 +391,7 @@ function Fuel:update(dt)
 		end
 	end
 	self.State.FuelCapacityGallons.Value = capacity
-	if not (self.State.EngineOn and self.State.EngineOn.Value) then
+	if not getEngineRunningState(self.State) then
 		self:syncOutputs()
 		return
 	end

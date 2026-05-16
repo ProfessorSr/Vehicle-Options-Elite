@@ -1,6 +1,4 @@
-00:07:21.424  Stack Begin  -  Studio
-00:07:21.424  Script 'Players.KyaidehnRust.PlayerGui.A-Chassis Interface.Fuel', Line 24  -  Studio - Fuel:24
-00:07:21.424  Stack End  -  Studio-- Fuel/Server.luau
+
 -- Server-side DataStore persistence for the Fuel plugin.
 -- Saves and restores FuelGallons per player across sessions.
 --

@@ -61,6 +61,9 @@ local function findRuntimeCarAndValues()
 		local vehicle = carValue.Value
 		-- First, check for VOE_State folder (preferred)
 		local voeState = vehicle:FindFirstChild("VOE_State")
+		if not voeState then
+			voeState = vehicle:FindFirstChild("VOE_State") or vehicle:WaitForChild("VOE_State", 5)
+		end
 		if voeState then
 			return vehicle, voeState
 		end
@@ -187,6 +190,29 @@ local function setupRole(roleName)
 		end
 		
 		if hinge then
+			debugLog("Hinge", string.format("Found hinge '%s' on %s (A0=%s, A1=%s, Target=%.2f)",
+					(hinge.Name or "<unnamed>"), rootPart:GetFullName(),
+					(hinge.Attachment0 and hinge.Attachment0.Name) or "<nil>",
+					(hinge.Attachment1 and hinge.Attachment1.Name) or "<nil>",
+					type(hinge.TargetAngle) == "number" and hinge.TargetAngle or 0))
+
+			-- Extra diagnostics: attachment world CFrames
+			if hinge.Attachment0 then
+				debugLog("Hinge", string.format("A0 WorldCF=%s", tostring(hinge.Attachment0.WorldCFrame)))
+			end
+			if hinge.Attachment1 then
+				debugLog("Hinge", string.format("A1 WorldCF=%s", tostring(hinge.Attachment1.WorldCFrame)))
+			end
+
+			-- List any welds or weldconstraints on the root part that may block motion
+			for _, c in ipairs(rootPart:GetChildren()) do
+				if c:IsA("Weld") or c:IsA("WeldConstraint") or c:IsA("Motor6D") then
+					local p0 = c.Part0 and c.Part0.Name or "<nil>"
+					local p1 = c.Part1 and c.Part1.Name or "<nil>"
+					debugLog("Hinge", string.format("Root has %s -> Part0=%s Part1=%s", c.ClassName, p0, p1))
+				end
+			end
+
 			-- Get angles from config or part attributes
 			local openAngle = tonumber(rootPart:GetAttribute(Tags.Optional.OpenAngleAttribute)) or tonumber(roleConfig.OpenAngle) or 50
 			local closeAngle = tonumber(rootPart:GetAttribute("VOE_CloseAngle")) or tonumber(roleConfig.CloseAngle) or 0
@@ -224,6 +250,7 @@ local function setRoleOpen(roleName, isOpen)
 	for _, item in ipairs(Items[roleName] or {}) do
 		if item.Hinge and item.Hinge.Parent and item.Part and item.Part.Parent then
 			item.Hinge.TargetAngle = isOpen and item.OpenAngle or item.CloseAngle
+			debugLog("Action", string.format("Set %s TargetAngle=%.2f (open=%s)", roleName, item.Hinge.TargetAngle, tostring(isOpen)))
 		end
 	end
 end
@@ -245,6 +272,7 @@ local function toggleRole(roleName)
 	if last and (now - last) < debounce then return true end
 	LastToggleAt[roleName] = now
 	stateValue.Value = not stateValue.Value
+	debugLog("Toggle", string.format("%s toggled -> %s", roleName, tostring(stateValue.Value)))
 	return true
 end
 

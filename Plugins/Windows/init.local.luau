@@ -61,6 +61,9 @@ local function findRuntimeCarAndValues()
 		local vehicle = carValue.Value
 		-- First, check for VOE_State folder (preferred)
 		local voeState = vehicle:FindFirstChild("VOE_State")
+		if not voeState then
+			voeState = vehicle:FindFirstChild("VOE_State") or vehicle:WaitForChild("VOE_State", 5)
+		end
 		if voeState then
 			return vehicle, voeState
 		end
