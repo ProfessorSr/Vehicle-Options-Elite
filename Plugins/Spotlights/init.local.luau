@@ -18,6 +18,7 @@
 local Config = require(script:WaitForChild("Config"))
 local Tags = require(script:WaitForChild("Tags"))
 local PluginSounds = require(script:WaitForChild("Sounds"))
+local Interface = require(script:WaitForChild("Interface"))
 
 if Config and Config.Enabled == false then
 	warn("[Spotlights] Plugin disabled via config")
@@ -575,6 +576,17 @@ local function startup()
 	end
 
 	applySpotlightState()
+
+	-- Create the spotlight control GUI
+	Interface.create(script.Parent, {
+		StateValues = StateValues,
+		RotationStates = RotationStates,
+		rotateBase = rotateBase,
+		rotateArm = rotateArm,
+		ROLE_ORDER = ROLE_ORDER,
+		debugLog = debugLog,
+	})
+
 	debugLog("Startup", "Spotlights plugin initialized successfully")
 end
 
