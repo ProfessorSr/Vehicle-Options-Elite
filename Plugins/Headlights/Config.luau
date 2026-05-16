@@ -19,6 +19,10 @@ Config.Debug = {
 	Verbose = false,
 }
 
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 Config.AttachmentYawOverrides = {
 	-- Degrees around Y axis; keys match lightListName/profileName values used by mapping.
 	High = 0,

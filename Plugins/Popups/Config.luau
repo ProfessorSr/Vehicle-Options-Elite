@@ -33,8 +33,9 @@ Config.PowerActions = {
 }
 
 -- Plugin-owned keybinds exposed through the generic client bridge.
-Config.Keybinds = {
-	TogglePopups = Enum.KeyCode.P,
-}
+local keybindsModule = script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 
 return Config

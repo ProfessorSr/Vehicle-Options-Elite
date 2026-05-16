@@ -30,6 +30,7 @@ end
 local RunService = game:GetService("RunService")
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
+local UserInputService = RunService:IsClient() and game:GetService("UserInputService") or nil
 
 --====================================================================
 -- Context Resolution
@@ -138,6 +139,12 @@ local function initializeStateValues()
     if not StateContainer then return end
     for stateName, spec in pairs(STATE_DEFS) do
         StateValues[stateName] = ensureStateValue(StateContainer, stateName, spec.ClassName, spec.Default)
+    end
+end
+
+local function debugLog(category, message)
+    if Config.Debug and Config.Debug.Enabled ~= false then
+        print(string.format("[FiretruckLights][%s] %s", category, message))
     end
 end
 
@@ -255,6 +262,25 @@ local function applyFiretruckLights()
     end
 end
 
+local function handleKeybind(input, gameProcessed)
+    if gameProcessed then return end
+    if not UserInputService then return end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+
+    local keybinds = Config.Keybinds or {}
+    if input.KeyCode == (keybinds.ToggleEmergency or Enum.KeyCode.P) then
+        if not StateValues.EmergencyOn or not StateValues.EmergencyOn:IsA("BoolValue") then
+            return
+        end
+
+        StateValues.EmergencyOn.Value = not StateValues.EmergencyOn.Value
+        if Config.Debug and Config.Debug.LogKeybinds ~= false then
+            local enabled = StateValues.EmergencyOn.Value
+            debugLog("Input", "Emergency lights " .. tostring(enabled and "ON" or "OFF"))
+        end
+    end
+end
+
 -- Main Loop
 local function update(dt)
     applyFiretruckLights()
@@ -270,6 +296,9 @@ local function startup()
     if not StateContainer then warn("[FiretruckLights] Could not resolve state container") return end
     initializeStateValues()
     setupLightMapping()
+    if UserInputService then
+        UserInputService.InputBegan:Connect(handleKeybind)
+    end
     RunService.Heartbeat:Connect(update)
 end
 

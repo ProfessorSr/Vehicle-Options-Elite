@@ -15,6 +15,8 @@
 --====================================================================
 
 local Config = require(script:WaitForChild("Config"))
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
 local Tags = require(script:WaitForChild("Tags"))
 local PluginSounds = require(script:WaitForChild("Sounds"))
 
@@ -330,6 +332,12 @@ local function handleKeybind(input, gameProcessed)
 	if gameProcessed then return end
 	local keyCode = input.KeyCode
 	local keybinds = Config.Keybinds or {}
+	local keybindMap = Keybinds.KeybindMap or {
+		["ToggleWindowFL"] = "WindowFL",
+		["ToggleWindowFR"] = "WindowFR",
+		["ToggleWindowRL"] = "WindowRL",
+		["ToggleWindowRR"] = "WindowRR",
+	}
 	
 	-- Check if vehicle has power (IsOn or ACC)
 	local hasPower = false

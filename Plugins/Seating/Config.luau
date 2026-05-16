@@ -11,7 +11,10 @@ local PluginConfig = {
 		Enabled = false,
 		LogKeybinds = true,
 	},
-	
+
+	-- Keybinds
+	Keybinds = {},
+
 	-- Seat and entry metadata
 	-- DriverRole determines which door the driver uses by default
 	-- AuthorizationWindowSeconds is how long a seat entry/exit authorization stays valid
@@ -52,5 +55,9 @@ local PluginConfig = {
 		LockedSeats = {}, -- e.g., {"FRPassSeat", "RRPassSeat"}
 	},
 }
+
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+PluginConfig.Keybinds = Keybinds
 
 return PluginConfig

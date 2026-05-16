@@ -26,10 +26,9 @@ Config.Lights = {
 	Signal = {Brightness = 6.5, Range = 30, Angle = 80, Shadows = false, Color = Color3.fromRGB(255, 170, 0)},
 }
 
-Config.Keybinds = {
-	ToggleSignalLeft = Enum.KeyCode.Z,
-	ToggleSignalRight = Enum.KeyCode.C,
-	ToggleHazard = Enum.KeyCode.X,
-}
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 
 return Config

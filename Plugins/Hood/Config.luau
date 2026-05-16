@@ -40,9 +40,9 @@ Config.ClientAudio = {
 }
 
 -- Plugin-owned keybinds exposed through the generic client bridge.
-Config.Keybinds = {
-	ToggleHood = Enum.KeyCode.H,
-	UnlockHood = Enum.KeyCode.U,  -- Unlock hood from inside car (like real hood release)
-}
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 
 return Config

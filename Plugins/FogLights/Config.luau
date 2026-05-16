@@ -25,8 +25,9 @@ Config.Lights = {
 	Fog = {Brightness = 2.1, Range = 55, Angle = 90, Shadows = false, Color = Color3.fromRGB(255, 237, 181)},
 }
 
-Config.Keybinds = {
-	ToggleFog = Enum.KeyCode.K,
-}
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 
 return Config

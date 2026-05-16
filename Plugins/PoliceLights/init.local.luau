@@ -58,7 +58,7 @@ end
 -- Configuration
 --====================================================================
 
-local KEY_TOGGLE_EMERGENCY = Enum.KeyCode.P
+local KEY_TOGGLE_EMERGENCY = (Config.Keybinds and Config.Keybinds.ToggleEmergency) or Enum.KeyCode.P
 local BLINK_INTERVAL = Config.BlinkInterval or 0.5
 local ATTACHMENT_YAW_OVERRIDES = Config.AttachmentYawOverrides or {
 	Main = 0,

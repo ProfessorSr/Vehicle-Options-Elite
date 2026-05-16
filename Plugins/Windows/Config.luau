@@ -111,12 +111,9 @@ Config.Presets = {
 }
 
 -- Keybinds owned by the window plugin. These are bridged generically to the client.
-Config.Keybinds = {
-	ToggleWindowFL = Enum.KeyCode.Five,
-	ToggleWindowFR = Enum.KeyCode.Six,
-	ToggleWindowRL = Enum.KeyCode.Seven,
-	ToggleWindowRR = Enum.KeyCode.Eight,
-	ToggleWindowsAll = Enum.KeyCode.Comma,
-}
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 
 return Config

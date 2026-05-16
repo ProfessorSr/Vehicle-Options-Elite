@@ -105,14 +105,9 @@ Config.Presets = {
 }
 
 -- Keybinds owned by the door plugin. These are bridged generically to the client.
-Config.Keybinds = {
-	ToggleDoorFL = Enum.KeyCode.Seven,
-	ToggleDoorFR = Enum.KeyCode.Eight,
-	ToggleDoorRL = Enum.KeyCode.Three,
-	ToggleDoorRR = Enum.KeyCode.Four,
-	ToggleDoorSL = Enum.KeyCode.Nine,
-	ToggleDoorSR = Enum.KeyCode.Zero,
-	ToggleGasDoor = Enum.KeyCode.O,
-}
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 
 return Config

@@ -37,10 +37,10 @@ Config.Spotlights = {
 	}
 
 
-Config.Keybinds = {
-	ToggleSpotlightLeft = Enum.KeyCode.One,
-	ToggleSpotlightRight = Enum.KeyCode.Two,
-}
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 
 Config.Lights = {
 	Spotlight = {Brightness = 4, Range = 60, Angle = 45, Shadows = true, Color = Color3.fromRGB(255, 255, 230)},

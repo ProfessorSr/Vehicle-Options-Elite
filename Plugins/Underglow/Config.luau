@@ -52,4 +52,8 @@ Config.Underglow = {
 	Range = 8,
 }
 
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 return Config

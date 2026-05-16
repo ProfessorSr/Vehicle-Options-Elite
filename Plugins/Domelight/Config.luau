@@ -13,10 +13,8 @@ local PluginConfig = {
 	},
 	
 	-- Keybinds
-	Keybinds = {
-		ToggleDomelight = Enum.KeyCode.L,
-	},
-	
+	Keybinds = {},
+
 	-- Light profiles
 	Lights = {
 		Dome = {
@@ -33,5 +31,9 @@ local PluginConfig = {
 	-- When false: domelight only responds to manual switch
 	AutoWithDoors = true,
 }
+
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+PluginConfig.Keybinds = Keybinds
 
 return PluginConfig

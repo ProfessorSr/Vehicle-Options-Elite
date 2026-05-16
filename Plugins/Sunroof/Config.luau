@@ -23,8 +23,9 @@ Config.OpenSpeed = 2.8
 Config.OpenTorque = 15000
 
 -- Plugin-owned keybinds exposed through the generic client bridge.
-Config.Keybinds = {
-	ToggleSunroof = Enum.KeyCode.M,
-}
+local keybindsModule = script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 
 return Config

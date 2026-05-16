@@ -53,10 +53,11 @@ if Config and Config.Enabled == false then
 	return
 end
 
-local IGNITION_KEYBOARD = Enum.KeyCode.F
-local IGNITION_CONTROLLER = Enum.KeyCode.ButtonB
-local BRAKE_KEYBOARD = Enum.KeyCode.S
-local BRAKE_CONTROLLER = Enum.KeyCode.ButtonL2
+local keybinds = Config.Keybinds or {}
+local IGNITION_KEYBOARD = keybinds.Ignition or Enum.KeyCode.F
+local IGNITION_CONTROLLER = keybinds.IgnitionController or Enum.KeyCode.ButtonB
+local BRAKE_KEYBOARD = keybinds.Brake or Enum.KeyCode.S
+local BRAKE_CONTROLLER = keybinds.BrakeController or Enum.KeyCode.ButtonL2
 
 local gamepadPresent = UserInputService.GamepadEnabled
 

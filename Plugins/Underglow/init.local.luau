@@ -255,7 +255,8 @@ end
 
 local function handleKeybind(input, processed)
     if processed or not StateValues.UnderglowOn then return end
-    if input.KeyCode == Enum.KeyCode.U then
+    local keybinds = Config.Keybinds or {}
+    if input.KeyCode == (keybinds.ToggleUnderglow or Enum.KeyCode.U) then
         StateValues.UnderglowOn.Value = not StateValues.UnderglowOn.Value
         print("[Underglow] Toggled UnderglowOn to", StateValues.UnderglowOn.Value)
     end

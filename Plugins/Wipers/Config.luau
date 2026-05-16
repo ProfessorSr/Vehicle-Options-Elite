@@ -103,13 +103,9 @@ Config.Openables = {
 }
 
 -- Plugin-owned keybinds exposed through the generic client bridge.
-Config.Keybinds = {
-	-- Toggles the paired front windshield wipers.
-	-- Toggles the rear window wiper independently from the front set.
-	-- Toggles both headlight wipers together as one group.
-	ToggleWipers = Enum.KeyCode.J,
-	ToggleRearWiper = Enum.KeyCode.K,
-	ToggleHeadlightWipers = Enum.KeyCode.L,
-}
+local keybindsModule = script.Parent and script.Parent:FindFirstChild("Keybinds") or script:FindFirstChild("Keybinds")
+local Keybinds = keybindsModule and require(keybindsModule) or {}
+Config.Keybinds = Keybinds
+
 
 return Config

@@ -30,6 +30,7 @@ end
 local RunService = game:GetService("RunService")
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
+local UserInputService = RunService:IsClient() and game:GetService("UserInputService") or nil
 
 --====================================================================
 -- Context Resolution
@@ -256,6 +257,20 @@ local function applyAmbulanceLights()
     end
 end
 
+local function handleKeybind(input, gameProcessed)
+    if gameProcessed then return end
+    if not UserInputService then return end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+
+    local keybinds = Config.Keybinds or {}
+    if input.KeyCode == (keybinds.ToggleEmergency or Enum.KeyCode.P) then
+        StateValues.EmergencyOn.Value = not StateValues.EmergencyOn.Value
+        if Config.Debug and Config.Debug.LogKeybinds ~= false then
+            debugLog("Input", "Emergency lights " .. tostring(StateValues.EmergencyOn.Value and "ON" or "OFF"))
+        end
+    end
+end
+
 -- Main Loop
 local function update(dt)
     applyAmbulanceLights()
@@ -271,6 +286,9 @@ local function startup()
     if not StateContainer then warn("[AmbulanceLights] Could not resolve state container") return end
     initializeStateValues()
     setupLightMapping()
+    if UserInputService then
+        UserInputService.InputBegan:Connect(handleKeybind)
+    end
     RunService.Heartbeat:Connect(update)
 end
 
