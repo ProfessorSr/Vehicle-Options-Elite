@@ -6,7 +6,7 @@
 
 local Keybinds = {
 	ToggleHood = Enum.KeyCode.H,
-	UnlockHood = Enum.KeyCode.U,  -- Unlock hood from inside car (like real hood release)
+	UnlockHood = Enum.KeyCode.Minus,  -- Unlock hood from inside car (like real hood release)
 }
 
 return Keybinds

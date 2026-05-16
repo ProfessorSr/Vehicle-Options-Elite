@@ -136,15 +136,7 @@ end
 local function initializeStateValues()
 	if not StateContainer then return end
 	StateValues.Hood = ensureStateValue(StateContainer, "Hood", "BoolValue", false)
-	-- HoodUnlocked is created by HoodHandler, but we need to reference it
-	-- Wait for it to be created if it doesn't exist yet
-	local existingUnlocked = StateContainer:FindFirstChild("HoodUnlocked")
-	if existingUnlocked then
-		StateValues.HoodUnlocked = existingUnlocked
-	else
-		-- Create it if HoodHandler hasn't run yet (shouldn't happen, but just in case)
-		StateValues.HoodUnlocked = ensureStateValue(StateContainer, "HoodUnlocked", "BoolValue", false)
-	end
+	StateValues.HoodUnlocked = ensureStateValue(StateContainer, "HoodUnlocked", "BoolValue", false)
 end
 
 --====================================================================
@@ -274,13 +266,22 @@ local function handleKeybind(input, gameProcessed)
 		end
 	end
 	
-	-- Unlock hood (U key) - like pulling the hood release lever inside the car
-	if keyCode == (keybinds.UnlockHood or Enum.KeyCode.U) then
+	-- Unlock hood (Minus key) - like pulling the hood release lever inside the car
+	if keyCode == (keybinds.UnlockHood or Enum.KeyCode.Minus) then
+		-- Fire RemoteEvent so the SERVER sets HoodUnlocked = true
+		-- (client-side changes to VOE_State values don't replicate to server)
+		if Vehicle then
+			local unlockEvent = Vehicle:FindFirstChild("HoodUnlockRequest")
+			if unlockEvent then
+				unlockEvent:FireServer()
+			end
+		end
+		-- Also set locally for immediate UI feedback (server will replicate back)
 		if StateValues.HoodUnlocked then
 			StateValues.HoodUnlocked.Value = true
-			if DEBUG_CONFIG.LogKeybinds ~= false then
-				debugLog("Input", "Hood UNLOCKED - you can now open it from outside")
-			end
+		end
+		if DEBUG_CONFIG.LogKeybinds ~= false then
+			debugLog("Input", "Hood UNLOCKED - you can now open it from outside")
 		end
 	end
 end

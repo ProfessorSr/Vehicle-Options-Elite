@@ -122,7 +122,32 @@ function HoodHandler.Initialize(vehicle, voeState)
 	end
 	unlockedValue:SetAttribute("VOE_Owner", "HoodHandler")
 	unlockedValue:SetAttribute("VOE_Type", "State")
-	
+
+	--====================================================================
+	-- RemoteEvent for client-to-server unlock requests
+	-- The Hood plugin runs on the client, so it cannot directly set
+	-- HoodUnlocked on the server. It fires this event instead.
+	--====================================================================
+
+	local unlockEvent = vehicle:FindFirstChild("HoodUnlockRequest")
+	if not unlockEvent then
+		unlockEvent = Instance.new("RemoteEvent")
+		unlockEvent.Name = "HoodUnlockRequest"
+		unlockEvent.Parent = vehicle
+	end
+
+	unlockEvent.OnServerEvent:Connect(function(player)
+		-- Validate: player must be seated in this vehicle
+		local character = player.Character
+		if not character then return end
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if not humanoid or not humanoid.SeatPart then return end
+		if not humanoid.SeatPart:IsDescendantOf(vehicle) then return end
+
+		unlockedValue.Value = true
+		print("[HoodHandler] Hood unlocked by " .. player.Name)
+	end)
+
 	--====================================================================
 	-- State change handlers
 	--====================================================================
