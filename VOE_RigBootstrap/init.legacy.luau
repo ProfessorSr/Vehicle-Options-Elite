@@ -133,6 +133,242 @@ local function breakExternalWelds(partSet)
 	end
 end
 
+local function breakWeldsTouching(partSet)
+	local toDestroy = {}
+	for _, inst in ipairs(vehicleModel:GetDescendants()) do
+		if inst:IsA("Weld") or inst:IsA("WeldConstraint") or inst:IsA("Motor6D") then
+			local p0, p1 = inst.Part0, inst.Part1
+			if (p0 and partSet[p0]) or (p1 and partSet[p1]) then
+				table.insert(toDestroy, inst)
+			end
+		end
+	end
+	for _, inst in ipairs(toDestroy) do
+		inst:Destroy()
+	end
+end
+
+local function addPartAndDescendants(partSet, part)
+	if not part or not part:IsA("BasePart") then return end
+	partSet[part] = true
+	for _, descendant in ipairs(part:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			partSet[descendant] = true
+		end
+	end
+end
+
+local function buildTaggedPartSet(tag)
+	local set = {}
+	for _, inst in ipairs(CollectionService:GetTagged(tag)) do
+		if inst:IsA("BasePart") and inst:IsDescendantOf(bodyModel) then
+			addPartAndDescendants(set, inst)
+		end
+	end
+	return set
+end
+
+local function getFirstTaggedPart(tag)
+	if not tag or tag == "" then return nil end
+	for _, inst in ipairs(CollectionService:GetTagged(tag)) do
+		if inst:IsA("BasePart") and inst:IsDescendantOf(bodyModel) then
+			return inst
+		end
+	end
+	return nil
+end
+
+local function findAttachmentInRoot(part, attachmentName)
+	if not part or not part:IsA("BasePart") or not attachmentName or attachmentName == "" then
+		return nil
+	end
+	local attachment = part:FindFirstChild(attachmentName)
+	if attachment and attachment:IsA("Attachment") then
+		return attachment
+	end
+	for _, descendant in ipairs(part:GetDescendants()) do
+		if descendant:IsA("Attachment") and descendant.Name == attachmentName then
+			return descendant
+		end
+	end
+	return nil
+end
+
+local function findAttachmentByName(name)
+	for _, inst in ipairs(vehicleModel:GetDescendants()) do
+		if inst:IsA("Attachment") and inst.Name == name then
+			return inst
+		end
+	end
+	return nil
+end
+
+local function isHingePivot(inst)
+	return inst
+		and inst:IsA("Attachment")
+		and (inst.Name == "VOE_HingePivot" or CollectionService:HasTag(inst, "VOE_HingePivot"))
+end
+
+local function getNearestVehicleContainer(part)
+	local current = part and part.Parent
+	while current and current ~= bodyModel and current ~= vehicleModel do
+		if current:IsA("Model") or current:IsA("Folder") then
+			return current
+		end
+		current = current.Parent
+	end
+	return part
+end
+
+local function collectPartsFromContainer(container)
+	local parts = {}
+	if not container then return parts end
+	if container:IsA("BasePart") then
+		table.insert(parts, container)
+		return parts
+	end
+	for _, descendant in ipairs(container:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant:IsDescendantOf(bodyModel) then
+			table.insert(parts, descendant)
+		end
+	end
+	return parts
+end
+
+local function inferSpotlightSegment(attachment)
+	local current = attachment
+	while current and current ~= bodyModel and current ~= vehicleModel do
+		local name = string.lower(current.Name or "")
+		if name:find("base") or name:find("mount") then
+			return "Base"
+		elseif name:find("arm") or name:find("shaft") or name:find("stalk") then
+			return "Arm"
+		elseif name:find("lamp") or name:find("head") or name:find("light") then
+			return "Lamp"
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function collectSpotlightHingePivots(spec)
+	local bySegment = {}
+	local candidates = {}
+	local seenParts = {}
+	local sideAliases = spec.Id == "Left" and {"left", "lh", "driver"} or {"right", "rh", "passenger"}
+
+	for _, lightPart in ipairs(getTagged(spec.LightTag)) do
+		for _, part in ipairs(collectPartsFromContainer(getNearestVehicleContainer(lightPart))) do
+			if not seenParts[part] then
+				seenParts[part] = true
+				table.insert(candidates, part)
+			end
+		end
+	end
+
+	for _, inst in ipairs(vehicleModel:GetDescendants()) do
+		if isHingePivot(inst) and inst.Parent and inst.Parent:IsA("BasePart") then
+			local path = string.lower(inst:GetFullName())
+			local matchesSide = false
+			for _, alias in ipairs(sideAliases) do
+				if path:find(alias) then
+					matchesSide = true
+					break
+				end
+			end
+			if path:find("spotlight") and matchesSide then
+				if not seenParts[inst.Parent] then
+					seenParts[inst.Parent] = true
+					table.insert(candidates, inst.Parent)
+				end
+			end
+		end
+	end
+
+	for _, explicit in ipairs({
+		{Segment = "Base", Name = spec.BaseAttachment},
+		{Segment = "Arm", Name = spec.ArmAttachment},
+		{Segment = "Lamp", Name = spec.LampAttachment},
+	}) do
+		local attachment = findAttachmentByName(explicit.Name)
+		if attachment and attachment.Parent and attachment.Parent:IsA("BasePart") then
+			bySegment[explicit.Segment] = attachment
+			if not seenParts[attachment.Parent] then
+				seenParts[attachment.Parent] = true
+				table.insert(candidates, attachment.Parent)
+			end
+		end
+	end
+
+	local genericPivots = {}
+	for _, part in ipairs(candidates) do
+		for _, descendant in ipairs(part:GetDescendants()) do
+			if isHingePivot(descendant) then
+				table.insert(genericPivots, descendant)
+				local segment = inferSpotlightSegment(descendant)
+				if segment and not bySegment[segment] then
+					bySegment[segment] = descendant
+				end
+			end
+		end
+	end
+
+	table.sort(genericPivots, function(a, b)
+		return a:GetFullName() < b:GetFullName()
+	end)
+
+	for _, segment in ipairs({"Base", "Arm", "Lamp"}) do
+		if not bySegment[segment] then
+			for _, pivot in ipairs(genericPivots) do
+				local alreadyUsed = false
+				for _, assigned in pairs(bySegment) do
+					if assigned == pivot then
+						alreadyUsed = true
+						break
+					end
+				end
+				if not alreadyUsed then
+					bySegment[segment] = pivot
+					break
+				end
+			end
+		end
+	end
+
+	return bySegment, candidates
+end
+
+local function createServoHinge(movingPart, pivotAttachment, anchorPart, hingeName, driveName)
+	if not movingPart or not movingPart:IsA("BasePart") then return nil end
+	if not pivotAttachment or not pivotAttachment:IsA("Attachment") then return nil end
+	if not anchorPart or not anchorPart:IsA("BasePart") then return nil end
+	if movingPart == anchorPart then return nil end
+
+	local existing = movingPart:FindFirstChild(hingeName)
+	if existing and existing:IsA("HingeConstraint") then
+		return existing
+	end
+
+	local worldCF = pivotAttachment.WorldCFrame
+	local driveAttachment = Instance.new("Attachment")
+	driveAttachment.Name = driveName
+	driveAttachment.CFrame = anchorPart.CFrame:ToObjectSpace(worldCF)
+	driveAttachment.Parent = anchorPart
+
+	local hinge = Instance.new("HingeConstraint")
+	hinge.Name = hingeName
+	hinge.Attachment0 = pivotAttachment
+	hinge.Attachment1 = driveAttachment
+	hinge.ActuatorType = Enum.ActuatorType.Servo
+	hinge.AngularSpeed = 5
+	hinge.ServoMaxTorque = 15000
+	hinge.TargetAngle = 0
+	hinge.LimitsEnabled = false
+	hinge.Parent = movingPart
+
+	return hinge
+end
+
 --====================================================================
 -- STEP 1 — DOORS (anchor → break → weld/constrain → unanchor)
 --====================================================================
@@ -453,7 +689,144 @@ for _, pair in ipairs(HINGED_PAIRS) do
 end
 
 --====================================================================
--- STEP 4 — INITIALIZE HANDLER MODULES
+-- STEP 4 — SPOTLIGHTS (anchor → break → constrain → unanchor)
+--====================================================================
+
+local SPOTLIGHT_SPECS = {
+	{
+		Id = "Left",
+		LightTag = "VOE_SpotlightLeft_Lamp",
+		BaseRootTag = "VOE_SpotlightLeft_BaseRoot",
+		BasePartTag = "VOE_SpotlightLeft_BasePart",
+		ArmRootTag = "VOE_SpotlightLeft_ArmRoot",
+		ArmPartTag = "VOE_SpotlightLeft_ArmPart",
+		LampAttachment = "SpotlightLeft_Lamp",
+	},
+	{
+		Id = "Right",
+		LightTag = "VOE_SpotlightRight_Lamp",
+		BaseRootTag = "VOE_SpotlightRight_BaseRoot",
+		BasePartTag = "VOE_SpotlightRight_BasePart",
+		ArmRootTag = "VOE_SpotlightRight_ArmRoot",
+		ArmPartTag = "VOE_SpotlightRight_ArmPart",
+		LampAttachment = "SpotlightRight_Lamp",
+	},
+}
+
+local spotlightTaggedSet = buildTaggedPartSet("VOE_Spotlight")
+if next(spotlightTaggedSet) then
+	breakExternalWelds(spotlightTaggedSet)
+	breakWeldsTouching(spotlightTaggedSet)
+	for part in pairs(spotlightTaggedSet) do
+		if part:IsA("BasePart") then
+			breakWelds(part)
+		end
+	end
+end
+
+for _, spec in ipairs(SPOTLIGHT_SPECS) do
+	local baseRoot = getFirstTaggedPart(spec.BaseRootTag)
+	local baseParts = getTagged(spec.BasePartTag)
+	local armRoot = getFirstTaggedPart(spec.ArmRootTag)
+	local armParts = getTagged(spec.ArmPartTag)
+	local lampAttachment = findAttachmentByName(spec.LampAttachment)
+	local lampPart = lampAttachment and lampAttachment.Parent
+
+	if lampPart and not lampPart:IsA("BasePart") then
+		lampPart = nil
+	end
+
+	for _, lightPart in ipairs(getTagged(spec.LightTag)) do
+		addPartAndDescendants(spotlightTaggedSet, lightPart)
+		if not lampPart and lightPart:IsA("BasePart") then
+			lampPart = lightPart
+		end
+	end
+
+	local spotlightSet = {}
+	addPartAndDescendants(spotlightSet, baseRoot)
+	for _, part in ipairs(baseParts) do
+		addPartAndDescendants(spotlightSet, part)
+	end
+	addPartAndDescendants(spotlightSet, armRoot)
+	for _, part in ipairs(armParts) do
+		addPartAndDescendants(spotlightSet, part)
+	end
+	addPartAndDescendants(spotlightSet, lampPart)
+
+	if next(spotlightSet) then
+		for part in pairs(spotlightSet) do
+			part.Anchored = true
+			part.AssemblyLinearVelocity = Vector3.zero
+			part.AssemblyAngularVelocity = Vector3.zero
+		end
+
+		breakWeldsTouching(spotlightSet)
+		for part in pairs(spotlightSet) do
+			breakWelds(part)
+		end
+
+		if baseRoot then
+			for _, part in ipairs(baseParts) do
+				if part and part:IsA("BasePart") and part ~= baseRoot then
+					weld(baseRoot, part)
+				end
+			end
+		end
+		if armRoot then
+			for _, part in ipairs(armParts) do
+				if part and part:IsA("BasePart") and part ~= armRoot then
+					weld(armRoot, part)
+				end
+			end
+		end
+
+		if baseRoot and armRoot then
+			local basePivot = findAttachmentInRoot(baseRoot, "VOE_HingePivot")
+			if basePivot then
+				createServoHinge(
+					baseRoot,
+					basePivot,
+					armRoot,
+					"VOE_Spotlight_" .. spec.Id .. "_BaseHinge",
+					"VOE_Spotlight_" .. spec.Id .. "_BaseDrive"
+				)
+			end
+		end
+
+		if armRoot then
+			local armPivot = findAttachmentInRoot(armRoot, "VOE_HingePivot")
+			if armPivot then
+				createServoHinge(
+					armRoot,
+					armPivot,
+					driveSeat,
+					"VOE_Spotlight_" .. spec.Id .. "_ArmHinge",
+					"VOE_Spotlight_" .. spec.Id .. "_ArmDrive"
+				)
+			end
+		end
+
+		if lampPart and lampAttachment then
+			createServoHinge(
+				lampPart,
+				lampAttachment,
+				armPart or armRoot or basePart or baseRoot,
+				"VOE_Spotlight_" .. spec.Id .. "_LampHinge",
+				"VOE_Spotlight_" .. spec.Id .. "_LampDrive"
+			)
+		end
+
+		task.wait()
+
+		for part in pairs(spotlightSet) do
+			part.Anchored = false
+		end
+	end
+end
+
+--====================================================================
+-- STEP 5 — INITIALIZE HANDLER MODULES
 --====================================================================
 
 local function safeRequire(moduleScript)
@@ -508,10 +881,17 @@ if domelightHandler and domelightHandler.Initialize then
 	print("[VOE_RigBootstrap] DomelightHandler initialized")
 end
 
+-- Initialize SpotlightsHandler
+local spotlightsHandler = safeRequire(script:FindFirstChild("SpotlightsHandler"))
+if spotlightsHandler and spotlightsHandler.Initialize then
+	spotlightsHandler.Initialize(vehicleModel, voeState)
+	print("[VOE_RigBootstrap] SpotlightsHandler initialized")
+end
+
 --====================================================================
 -- DONE
 --====================================================================
 
 vehicleModel:SetAttribute("VOE_RigReady", true)
 
-print("[VOE_RigBootstrap] Rig setup complete — doors, windows, click detection, handlers all initialized")
+print("[VOE_RigBootstrap] Rig setup complete — doors, windows, spotlights, click detection, handlers all initialized")

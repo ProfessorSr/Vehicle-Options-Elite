@@ -258,8 +258,8 @@ VOEPlugins.Plugins.Spotlights = {
 		"T - Rotate right lamp left/right",
 	},
 	Tags = {
-		"VOE_Light_SpotlightLeft - Left spotlight parts",
-		"VOE_Light_SpotlightRight - Right spotlight parts",
+		"VOE_SpotlightLeft_Lamp - Left spotlight lamp parts",
+		"VOE_SpotlightRight_Lamp - Right spotlight lamp parts",
 		"SpotlightLeft_Arm - Left arm attachment",
 		"SpotlightLeft_Lamp - Left lamp attachment",
 		"SpotlightRight_Arm - Right arm attachment",

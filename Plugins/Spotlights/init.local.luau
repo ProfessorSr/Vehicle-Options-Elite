@@ -8,7 +8,7 @@
 --
 -- NOTES:
 -- - Tag-driven system (no part hierarchy assumptions)
--- - Arm/lamp rotation rotates the physical part the attachment belongs to
+-- - Arm/lamp/base rotation drives hinge constraints created by VOE_RigBootstrap
 -- - Keybinds configured in Config
 
 --====================================================================
@@ -41,8 +41,14 @@ local ROLE_ORDER = {"Left", "Right"}
 local STATE_DEFS = {
 	SpotlightLeft = { ClassName = "BoolValue", Default = false },
 	SpotlightRight = { ClassName = "BoolValue", Default = false },
+	SpotlightLeftBaseAngle = { ClassName = "NumberValue", Default = 0 },
+	SpotlightLeftArmAngle = { ClassName = "NumberValue", Default = 0 },
+	SpotlightLeftLampAngle = { ClassName = "NumberValue", Default = 0 },
+	SpotlightRightBaseAngle = { ClassName = "NumberValue", Default = 0 },
+	SpotlightRightArmAngle = { ClassName = "NumberValue", Default = 0 },
+	SpotlightRightLampAngle = { ClassName = "NumberValue", Default = 0 },
 }
-local ROTATION_STEP = math.rad(5) -- 5 degrees per keypress
+local DEFAULT_ROTATION_STEP_DEGREES = 5
 
 --====================================================================
 -- State Management
@@ -133,6 +139,7 @@ local function ensureStateValue(container, name, className, defaultValue)
 	value:SetAttribute("VOE_Type", "State")
 	if className == "BoolValue" then value.Value = defaultValue or false
 	elseif className == "IntValue" then value.Value = defaultValue or 0
+	elseif className == "NumberValue" then value.Value = defaultValue or 0
 	elseif className == "StringValue" then value.Value = defaultValue or "" end
 	return value
 end
@@ -206,8 +213,8 @@ end
 local function setupLightMapping()
 	if not Vehicle then return end
 	local profile = Config.Lights and Config.Lights.Spotlight or {}
-	MappedLights.Left = mapLightsByTag(Tags.Required.SpotlightLeft_Tag or "VOE_Light_SpotlightLeft", profile)
-	MappedLights.Right = mapLightsByTag(Tags.Required.SpotlightRight_Tag or "VOE_Light_SpotlightRight", profile)
+	MappedLights.Left = mapLightsByTag(Tags.Required.SpotlightLeft_Tag, profile)
+	MappedLights.Right = mapLightsByTag(Tags.Required.SpotlightRight_Tag, profile)
 end
 
 --====================================================================
@@ -253,7 +260,7 @@ local function applySpotlightState()
 end
 
 --====================================================================
--- Arm/Lamp Rotation
+-- Hinge Rotation
 --====================================================================
 
 local function findAttachmentByName(vehicle, name)
@@ -266,75 +273,201 @@ local function findAttachmentByName(vehicle, name)
 	return nil
 end
 
+local function findHinge(part, name)
+	if part and part:IsA("BasePart") then
+		local byName = part:FindFirstChild(name)
+		if byName and byName:IsA("HingeConstraint") then
+			return byName
+		end
+	end
+	if Vehicle then
+		for _, inst in ipairs(Vehicle:GetDescendants()) do
+			if inst.Name == name and inst:IsA("HingeConstraint") then
+				return inst
+			end
+		end
+	end
+	return nil
+end
+
+local function applyHingeDefaults(hinge)
+	if not hinge then return end
+	hinge.ActuatorType = Enum.ActuatorType.Servo
+	hinge.AngularSpeed = Config.RotationSpeed or hinge.AngularSpeed or 5
+	hinge.ServoMaxTorque = Config.RotationTorque or hinge.ServoMaxTorque or 15000
+	hinge.LimitsEnabled = false
+end
+
+local function getMotionConfig(sideConfig, segmentName, part)
+	local defaults = (Config.MotionDefaults and Config.MotionDefaults[segmentName]) or {}
+	local segmentConfig = (sideConfig and sideConfig[segmentName]) or {}
+	return {
+		MinAngle = tonumber(part and part:GetAttribute(Tags.Optional.MinAngleAttribute))
+			or tonumber(part and part:GetAttribute("VOE_" .. segmentName .. "MinAngle"))
+			or tonumber(segmentConfig.MinAngle)
+			or tonumber(defaults.MinAngle)
+			or -180,
+		MaxAngle = tonumber(part and part:GetAttribute(Tags.Optional.MaxAngleAttribute))
+			or tonumber(part and part:GetAttribute("VOE_" .. segmentName .. "MaxAngle"))
+			or tonumber(segmentConfig.MaxAngle)
+			or tonumber(defaults.MaxAngle)
+			or 180,
+		StepAngle = tonumber(part and part:GetAttribute(Tags.Optional.RotationStepAttribute))
+			or tonumber(part and part:GetAttribute("VOE_" .. segmentName .. "StepAngle"))
+			or tonumber(segmentConfig.StepAngle)
+			or tonumber(defaults.StepAngle)
+			or DEFAULT_ROTATION_STEP_DEGREES,
+		Speed = tonumber(part and part:GetAttribute(Tags.Optional.OpenSpeedAttribute))
+			or tonumber(segmentConfig.Speed)
+			or tonumber(Config.RotationSpeed)
+			or 5,
+		Torque = tonumber(part and part:GetAttribute(Tags.Optional.OpenTorqueAttribute))
+			or tonumber(segmentConfig.Torque)
+			or tonumber(Config.RotationTorque)
+			or 15000,
+	}
+end
+
+local function clampAngle(angle, motion)
+	local minAngle = tonumber(motion and motion.MinAngle) or -180
+	local maxAngle = tonumber(motion and motion.MaxAngle) or 180
+	if minAngle > maxAngle then
+		minAngle, maxAngle = maxAngle, minAngle
+	end
+	return math.clamp(angle, minAngle, maxAngle)
+end
+
 local function setupRotation()
 	if not Vehicle then return end
 	local spotCfg = Config.Spotlights or {}
 	for _, id in ipairs(ROLE_ORDER) do
 		local cfg = spotCfg[id]
 		if cfg then
+			local baseAttachment = findAttachmentByName(Vehicle, cfg.baseAttachment or "")
 			local armAttachment = findAttachmentByName(Vehicle, cfg.armAttachment or "")
 			local lampAttachment = findAttachmentByName(Vehicle, cfg.lampAttachment or "")
 
-			-- The arm/lamp parts are the parent parts of the attachments
+			-- The arm/lamp/base parts are the parent parts of the attachments
+			local basePart = baseAttachment and baseAttachment.Parent or nil
 			local armPart = armAttachment and armAttachment.Parent or nil
 			local lampPart = lampAttachment and lampAttachment.Parent or nil
 
+			local baseHinge = findHinge(basePart, "VOE_Spotlight_" .. id .. "_BaseHinge")
+			local armHinge = findHinge(armPart, "VOE_Spotlight_" .. id .. "_ArmHinge")
+			local lampHinge = findHinge(lampPart, "VOE_Spotlight_" .. id .. "_LampHinge")
+
+			basePart = (basePart and basePart:IsA("BasePart") and basePart) or (baseHinge and baseHinge.Parent)
+			armPart = (armPart and armPart:IsA("BasePart") and armPart) or (armHinge and armHinge.Parent)
+			lampPart = (lampPart and lampPart:IsA("BasePart") and lampPart) or (lampHinge and lampHinge.Parent)
+
+			local baseMotion = getMotionConfig(cfg, "Base", basePart)
+			local armMotion = getMotionConfig(cfg, "Arm", armPart)
+			local lampMotion = getMotionConfig(cfg, "Lamp", lampPart)
+
 			RotationStates[id] = {
+				baseAttachment = baseAttachment,
 				armAttachment = armAttachment,
 				lampAttachment = lampAttachment,
+				basePart = basePart and basePart:IsA("BasePart") and basePart or nil,
 				armPart = armPart and armPart:IsA("BasePart") and armPart or nil,
 				lampPart = lampPart and lampPart:IsA("BasePart") and lampPart or nil,
-				armAngle = 0,
-				lampAngle = 0,
+				baseHinge = baseHinge,
+				armHinge = armHinge,
+				lampHinge = lampHinge,
+				baseMotion = baseMotion,
+				armMotion = armMotion,
+				lampMotion = lampMotion,
+				baseAngle = clampAngle((StateValues["Spotlight" .. id .. "BaseAngle"] and StateValues["Spotlight" .. id .. "BaseAngle"].Value) or 0, baseMotion),
+				armAngle = clampAngle((StateValues["Spotlight" .. id .. "ArmAngle"] and StateValues["Spotlight" .. id .. "ArmAngle"].Value) or 0, armMotion),
+				lampAngle = clampAngle((StateValues["Spotlight" .. id .. "LampAngle"] and StateValues["Spotlight" .. id .. "LampAngle"].Value) or 0, lampMotion),
+				initialBaseCFrame = basePart and basePart:IsA("BasePart") and basePart.CFrame or nil,
 				initialArmCFrame = armPart and armPart:IsA("BasePart") and armPart.CFrame or nil,
 				initialLampCFrame = lampPart and lampPart:IsA("BasePart") and lampPart.CFrame or nil,
 			}
 
-			debugLog("Setup", id .. ": arm=" .. (armAttachment and armAttachment.Name or "nil")
-				.. ", lamp=" .. (lampAttachment and lampAttachment.Name or "nil"))
+			applyHingeDefaults(RotationStates[id].baseHinge)
+			applyHingeDefaults(RotationStates[id].armHinge)
+			applyHingeDefaults(RotationStates[id].lampHinge)
+			if RotationStates[id].baseHinge then
+				RotationStates[id].baseHinge.AngularSpeed = baseMotion.Speed
+				RotationStates[id].baseHinge.ServoMaxTorque = baseMotion.Torque
+				RotationStates[id].baseHinge.TargetAngle = RotationStates[id].baseAngle
+			end
+			if RotationStates[id].armHinge then
+				RotationStates[id].armHinge.AngularSpeed = armMotion.Speed
+				RotationStates[id].armHinge.ServoMaxTorque = armMotion.Torque
+				RotationStates[id].armHinge.TargetAngle = RotationStates[id].armAngle
+			end
+			if RotationStates[id].lampHinge then
+				RotationStates[id].lampHinge.AngularSpeed = lampMotion.Speed
+				RotationStates[id].lampHinge.ServoMaxTorque = lampMotion.Torque
+				RotationStates[id].lampHinge.TargetAngle = RotationStates[id].lampAngle
+			end
+
+			debugLog("Setup", id .. ": base=" .. (baseAttachment and baseAttachment.Name or "nil")
+				.. ", arm=" .. (armAttachment and armAttachment.Name or "nil")
+				.. ", lamp=" .. (lampAttachment and lampAttachment.Name or "nil")
+				.. ", baseHinge=" .. (RotationStates[id].baseHinge and RotationStates[id].baseHinge.Name or "nil")
+				.. ", armHinge=" .. (RotationStates[id].armHinge and RotationStates[id].armHinge.Name or "nil")
+				.. ", lampHinge=" .. (RotationStates[id].lampHinge and RotationStates[id].lampHinge.Name or "nil")
+				.. ", baseRange=" .. tostring(baseMotion.MinAngle) .. ".." .. tostring(baseMotion.MaxAngle)
+				.. ", armRange=" .. tostring(armMotion.MinAngle) .. ".." .. tostring(armMotion.MaxAngle)
+				.. ", lampRange=" .. tostring(lampMotion.MinAngle) .. ".." .. tostring(lampMotion.MaxAngle))
 		end
 	end
 end
 
-local function rotateArm(id, delta)
+local function rotateHinge(state, hingeKey, angleKey, motionKey, deltaDegrees)
+	local hinge = state[hingeKey]
+	if not hinge or not hinge.Parent then return end
+	state[angleKey] = clampAngle((state[angleKey] or 0) + deltaDegrees, state[motionKey])
+	hinge.TargetAngle = state[angleKey]
+end
+
+local function rotateArm(id, deltaDegrees)
 	local state = RotationStates[id]
 	if not state then return end
-
-	-- Prefer rotating the physical part around the arm attachment pivot
-	if state.armPart and state.armPart.Parent and state.armAttachment and state.armAttachment.Parent then
-		state.armAngle = state.armAngle + delta
-		local pivotPos = state.armAttachment.WorldPosition
-		local currentCFrame = state.armPart.CFrame
-		-- Rotate around the attachment's world position
-		local offset = currentCFrame.Position - pivotPos
-		local rotation = CFrame.Angles(delta, 0, 0)
-		local newOffset = rotation:VectorToWorldSpace(offset)
-		state.armPart.CFrame = CFrame.new(pivotPos + newOffset) * (currentCFrame - currentCFrame.Position) * rotation
-	elseif state.armAttachment and state.armAttachment.Parent then
-		-- Fallback: just modify attachment CFrame (visual only, no physical effect)
-		state.armAngle = state.armAngle + delta
-		state.armAttachment.CFrame = state.armAttachment.CFrame * CFrame.Angles(delta, 0, 0)
+	rotateHinge(state, "armHinge", "armAngle", "armMotion", deltaDegrees)
+	if StateValues["Spotlight" .. id .. "ArmAngle"] then
+		StateValues["Spotlight" .. id .. "ArmAngle"].Value = state.armAngle
 	end
 end
 
-local function rotateLamp(id, delta)
+local function rotateLamp(id, deltaDegrees)
 	local state = RotationStates[id]
 	if not state then return end
-
-	-- Prefer rotating the physical part around the lamp attachment pivot
-	if state.lampPart and state.lampPart.Parent and state.lampAttachment and state.lampAttachment.Parent then
-		state.lampAngle = state.lampAngle + delta
-		local pivotPos = state.lampAttachment.WorldPosition
-		local currentCFrame = state.lampPart.CFrame
-		local offset = currentCFrame.Position - pivotPos
-		local rotation = CFrame.Angles(0, delta, 0)
-		local newOffset = rotation:VectorToWorldSpace(offset)
-		state.lampPart.CFrame = CFrame.new(pivotPos + newOffset) * (currentCFrame - currentCFrame.Position) * rotation
-	elseif state.lampAttachment and state.lampAttachment.Parent then
-		-- Fallback: just modify attachment CFrame
-		state.lampAngle = state.lampAngle + delta
-		state.lampAttachment.CFrame = state.lampAttachment.CFrame * CFrame.Angles(0, delta, 0)
+	rotateHinge(state, "lampHinge", "lampAngle", "lampMotion", deltaDegrees)
+	if StateValues["Spotlight" .. id .. "LampAngle"] then
+		StateValues["Spotlight" .. id .. "LampAngle"].Value = state.lampAngle
 	end
+end
+
+local function rotateBase(id, deltaDegrees)
+	local state = RotationStates[id]
+	if not state then return end
+	rotateHinge(state, "baseHinge", "baseAngle", "baseMotion", deltaDegrees)
+	if StateValues["Spotlight" .. id .. "BaseAngle"] then
+		StateValues["Spotlight" .. id .. "BaseAngle"].Value = state.baseAngle
+	end
+end
+
+local function keybindMatches(input, keybind)
+	if not input or not keybind then
+		return false
+	end
+	if input.UserInputType ~= Enum.UserInputType.Keyboard then
+		return false
+	end
+	local keyCode = input.KeyCode
+	if not keyCode then
+		return false
+	end
+	if typeof(keybind) == "EnumItem" then
+		return keyCode == keybind or keyCode.Name == keybind.Name
+	elseif typeof(keybind) == "string" then
+		return keyCode.Name == keybind
+	end
+	return false
 end
 
 --====================================================================
@@ -343,17 +476,16 @@ end
 
 local function handleKeybind(input, gameProcessed)
 	if gameProcessed then return end
-	local keyCode = input.KeyCode
 	local keybinds = Config.Keybinds or {}
 
 	-- On/off toggles
-	if keyCode == (keybinds.ToggleSpotlightLeft or Enum.KeyCode.One) then
+	if keybindMatches(input, keybinds.ToggleSpotlightLeft) then
 		if StateValues.SpotlightLeft then
 			StateValues.SpotlightLeft.Value = not StateValues.SpotlightLeft.Value
 			debugLog("Input", "SpotlightLeft " .. (StateValues.SpotlightLeft.Value and "ON" or "OFF"))
 		end
 		return
-	elseif keyCode == (keybinds.ToggleSpotlightRight or Enum.KeyCode.Two) then
+	elseif keybindMatches(input, keybinds.ToggleSpotlightRight) then
 		if StateValues.SpotlightRight then
 			StateValues.SpotlightRight.Value = not StateValues.SpotlightRight.Value
 			debugLog("Input", "SpotlightRight " .. (StateValues.SpotlightRight.Value and "ON" or "OFF"))
@@ -367,12 +499,24 @@ local function handleKeybind(input, gameProcessed)
 		local cfg = spotCfg[id]
 		if cfg then
 			local armKeyName = cfg.armKey
+			local armClockwiseKey = cfg.armClockwiseKey
 			local lampKeyName = cfg.lampKey
-			if armKeyName and keyCode.Name == armKeyName and RotationStates[id] then
-				rotateArm(id, ROTATION_STEP)
+			local baseKeyName = cfg.baseKey
+			local baseCounterKeyName = cfg.baseCounterKey
+			if armKeyName and keybindMatches(input, armKeyName) and RotationStates[id] then
+				rotateArm(id, RotationStates[id].armMotion.StepAngle)
 				return
-			elseif lampKeyName and keyCode.Name == lampKeyName and RotationStates[id] then
-				rotateLamp(id, ROTATION_STEP)
+			elseif armClockwiseKey and keybindMatches(input, armClockwiseKey) and RotationStates[id] then
+				rotateArm(id, -RotationStates[id].armMotion.StepAngle)
+				return
+			elseif lampKeyName and keybindMatches(input, lampKeyName) and RotationStates[id] then
+				rotateLamp(id, RotationStates[id].lampMotion.StepAngle)
+				return
+			elseif baseKeyName and keybindMatches(input, baseKeyName) and RotationStates[id] then
+				rotateBase(id, RotationStates[id].baseMotion.StepAngle)
+				return
+			elseif baseCounterKeyName and keybindMatches(input, baseCounterKeyName) and RotationStates[id] then
+				rotateBase(id, -RotationStates[id].baseMotion.StepAngle)
 				return
 			end
 		end
