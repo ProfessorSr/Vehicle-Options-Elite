@@ -97,6 +97,10 @@ Config.BatterySystem = {
 	EngineOffDrainRate = 0.05,
 	LowThreshold = 25,
 	CriticalThreshold = 10,
+	-- Battery condition (health) simulation
+	ConditionStartingValue = 100,
+	ConditionDegradationRate = 0.0001, -- percent per second of engine runtime
+	ConditionDeepDischargeMultiplier = 3, -- degradation multiplier when battery is critically low
 }
 
 Config.CoolantSystem = {
@@ -107,6 +111,12 @@ Config.CoolantSystem = {
 	LeakRate = 0,
 	PressureAtIdle = 10,
 	PressureAtRedline = 18,
+	-- Coolant temperature simulation
+	TempAtIdle = 180,
+	TempAtRedline = 230,
+	TempWarmupRate = 15,
+	TempCooldownRate = 10,
+	TempWarningThreshold = 230,
 }
 
 Config.LimpMode = {
@@ -134,6 +144,18 @@ Config.OilPressure = {
 	WarningThreshold = 18,
 	CriticalThreshold = 8,
 	WearPenaltyScale = 0.35,
+}
+
+-- Oil level simulation (separate from oil pressure)
+-- Oil level drops over time from engine consumption; low oil level reduces oil pressure and increases wear.
+Config.OilSystem = {
+	Enabled = true,
+	StartingLevel = 100,
+	BurnRateIdle = 0.0005, -- percent per second at idle
+	BurnRateLoad = 0.003, -- additional percent per second at full load
+	LeakRate = 0, -- percent per second passive leak (for damage scenarios)
+	WarningLevel = 25,
+	CriticalLevel = 10,
 }
 
 return Config

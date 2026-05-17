@@ -28,11 +28,11 @@ Tags.Instructions = {
 -- EngineWear
 -- EngineFailed
 -- EngineMisfiring
--- BatteryPercent / BatteryVoltage / BatteryLow / AlternatorOn
--- CoolantLevel / CoolantPressure / CoolantWarning
+-- BatteryPercent / BatteryVoltage / BatteryLow / AlternatorOn / BatteryCondition
+-- CoolantLevel / CoolantPressure / CoolantWarning / CoolantTemp / CoolantLight
 -- EngineLimpMode / CheckEngine
 -- MaintenanceMilesRemaining / MaintenanceDue
--- OilPressure / OilPressureWarning
+-- OilPressure / OilPressureWarning / OilLevel / OilLight
 --
 -- It also owns the client/server action:
 -- SetRPMHint

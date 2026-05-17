@@ -14,7 +14,6 @@
 --====================================================================
 local EngineConfig = require(script:WaitForChild("Config"))
 local EngineTags = require(script:WaitForChild("Tags"))
--- (Sound and AudioRuntime modules removed)
 local PartAccess = require(script:WaitForChild("PartAccess"))
 if EngineConfig and EngineConfig.Enabled == false then
 	warn("[Engine] Plugin disabled via config")
@@ -25,6 +24,11 @@ end
 --====================================================================
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+-- Engine sync interval: how often (in seconds) the client sends engine state updates to the server.
+local ENGINE_SYNC_INTERVAL = 5
 --====================================================================
 -- Context Resolution
 --====================================================================
@@ -37,13 +41,17 @@ local function findRuntimeCarAndValues()
 		local vehicle = carValue.Value
 		-- First, check for VOE_State folder (preferred)
 		local voeState = vehicle:FindFirstChild("VOE_State")
+		if not voeState then
+			-- Wait briefly for rig bootstrap to create VOE_State (race can occur during spawn)
+			voeState = vehicle:WaitForChild("VOE_State", 5)
+		end
 		if voeState then
-			return vehicle, voeState
+			return vehicle, voeState, pluginContainer, valuesFolder
 		end
 		-- Fallback to Values folder (legacy)
-		return vehicle, valuesFolder
+		return vehicle, valuesFolder, pluginContainer, valuesFolder
 	end
-	return nil, valuesFolder
+	return nil, valuesFolder, pluginContainer, valuesFolder
 end
 --====================================================================
 -- Configuration
@@ -152,6 +160,23 @@ function Engine.getPluginInfo()
 				VOE_Owner = "Engine", VOE_Type = "State"
 			},
 			OilPressureWarning = {ClassName = "BoolValue", Default = false, VOE_Owner = "Engine", VOE_Type = "State"},
+			CoolantTemp = {
+				ClassName = "NumberValue",
+				Default = tonumber(EngineConfig.CoolantSystem and EngineConfig.CoolantSystem.TempAtIdle) or 180,
+				VOE_Owner = "Engine", VOE_Type = "State"
+			},
+			OilLevel = {
+				ClassName = "NumberValue",
+				Default = tonumber(EngineConfig.OilSystem and EngineConfig.OilSystem.StartingLevel) or 100,
+				VOE_Owner = "Engine", VOE_Type = "State"
+			},
+			BatteryCondition = {
+				ClassName = "NumberValue",
+				Default = tonumber(EngineConfig.BatterySystem and EngineConfig.BatterySystem.ConditionStartingValue) or 100,
+				VOE_Owner = "Engine", VOE_Type = "State"
+			},
+			OilLight = {ClassName = "BoolValue", Default = false, VOE_Owner = "Engine", VOE_Type = "State"},
+			CoolantLight = {ClassName = "BoolValue", Default = false, VOE_Owner = "Engine", VOE_Type = "State"},
 		},
 		
 	}
@@ -181,6 +206,7 @@ function Engine.create(context)
 		_lastTotalDamage = 0,
 		_engineFailed = false,
 		_misfireRemaining = 0,
+		_engineSyncTimer = 0,
 	}, Engine)
 
 	-- Attribute persistence: read any existing attributes on the vehicle and
@@ -207,6 +233,11 @@ function Engine.create(context)
 			{attr = "EngineTemp", state = "EngineTemp", kind = "number"},
 			{attr = "OilPressure", state = "OilPressure", kind = "number"},
 			{attr = "CheckEngine", state = "CheckEngine", kind = "bool"},
+			{attr = "CoolantTemp", state = "CoolantTemp", kind = "number"},
+			{attr = "OilLevel", state = "OilLevel", kind = "number"},
+			{attr = "BatteryCondition", state = "BatteryCondition", kind = "number"},
+			{attr = "OilLight", state = "OilLight", kind = "bool"},
+			{attr = "CoolantLight", state = "CoolantLight", kind = "bool"},
 		}
 
 		for _, spec in ipairs(syncList) do
@@ -297,8 +328,7 @@ function Engine:setup()
 	local oilCfg = EngineConfig.OilPressure or {}
 	-- (Sound setup removed)
 	self.State.Running.Value = false
-	self.State.EngineRPM.Value = 0
-	self.State.EngineRPMMaxOverride.Value = 0
+
 	self.State.EngineTemp.Value = ambientTemp
 	self.State.EngineWear.Value = tonumber(EngineConfig.EngineWear and EngineConfig.EngineWear.StartingValue) or 100
 	self.State.BatteryPercent.Value = math.clamp(tonumber(batteryCfg.StartingPercent) or 100, 0, 100)
@@ -314,6 +344,53 @@ function Engine:setup()
 	self.State.MaintenanceDue.Value = false
 	self.State.OilPressure.Value = tonumber(oilCfg.PressureAtIdle) or 24
 	self.State.OilPressureWarning.Value = false
+	-- New monitoring state values
+	local oilLevelCfg = EngineConfig.OilSystem or {}
+	self.State.CoolantTemp.Value = tonumber(coolantCfg.TempAtIdle) or 180
+	self.State.OilLevel.Value = math.clamp(tonumber(oilLevelCfg.StartingLevel) or 100, 0, 100)
+	self.State.BatteryCondition.Value = math.clamp(tonumber(batteryCfg.ConditionStartingValue) or 100, 0, 100)
+	self.State.OilLight.Value = false
+	self.State.CoolantLight.Value = false
+	-- Load saved engine state from DataStore via server
+	local engineLoadRemote = ReplicatedStorage:FindFirstChild("EngineLoadRemote")
+	if engineLoadRemote and engineLoadRemote:IsA("RemoteFunction") then
+		local vehicleId = self.VehicleModel and self.VehicleModel.Name or "default"
+		local ok, savedState = pcall(function()
+			return engineLoadRemote:InvokeServer(vehicleId)
+		end)
+		if ok and type(savedState) == "table" then
+			if savedState.EngineWear ~= nil and self.State.EngineWear then
+				self.State.EngineWear.Value = math.clamp(tonumber(savedState.EngineWear) or 100, 0, 100)
+			end
+			if savedState.EngineTemp ~= nil and self.State.EngineTemp then
+				self.State.EngineTemp.Value = math.clamp(tonumber(savedState.EngineTemp) or ambientTemp, 0, 500)
+			end
+			if savedState.CoolantLevel ~= nil and self.State.CoolantLevel then
+				self.State.CoolantLevel.Value = math.clamp(tonumber(savedState.CoolantLevel) or 100, 0, 100)
+			end
+			if savedState.CoolantTemp ~= nil and self.State.CoolantTemp then
+				self.State.CoolantTemp.Value = math.clamp(tonumber(savedState.CoolantTemp) or 180, 0, 500)
+			end
+			if savedState.OilLevel ~= nil and self.State.OilLevel then
+				self.State.OilLevel.Value = math.clamp(tonumber(savedState.OilLevel) or 100, 0, 100)
+			end
+			if savedState.OilPressure ~= nil and self.State.OilPressure then
+				self.State.OilPressure.Value = math.clamp(tonumber(savedState.OilPressure) or 24, 0, 200)
+			end
+			if savedState.BatteryPercent ~= nil and self.State.BatteryPercent then
+				self.State.BatteryPercent.Value = math.clamp(tonumber(savedState.BatteryPercent) or 100, 0, 100)
+			end
+			if savedState.BatteryCondition ~= nil and self.State.BatteryCondition then
+				self.State.BatteryCondition.Value = math.clamp(tonumber(savedState.BatteryCondition) or 100, 0, 100)
+			end
+			if savedState.MaintenanceMilesRemaining ~= nil and self.State.MaintenanceMilesRemaining then
+				self.State.MaintenanceMilesRemaining.Value = math.clamp(tonumber(savedState.MaintenanceMilesRemaining) or 5000, 0, 100000)
+			end
+			if savedState.CheckEngine ~= nil and self.State.CheckEngine then
+				self.State.CheckEngine.Value = savedState.CheckEngine == true
+			end
+		end
+	end
 end
 function Engine:handleAction(action, payload)
 	if action == "SetRPMHint" and type(payload) == "number" then
@@ -472,43 +549,16 @@ function Engine:isFreeRevCondition(state)
 end
 function Engine:update(dt)
 	local state = self.State
-	local idleRpm = self:resolveIdleRPM()
 	local maxRpm = self:resolveMaxRPM()
 	local engineOn = self:isEngineOn(state)
 	local failed = self:isEngineFailed()
-	if self.GlobalConfig.AutoRunningLightsOnOccupant then
+	if self.GlobalConfig and self.GlobalConfig.AutoRunningLightsOnOccupant then
 		state.Running.Value = self.Seat.Occupant ~= nil
 	else
 		state.Running.Value = engineOn and not failed
 	end
-	local rpmMaxOverride = tonumber(state.EngineRPMMaxOverride and state.EngineRPMMaxOverride.Value) or 0
-	local effectiveMaxRpm = self:resolveWearRPMCap(maxRpm)
-	if rpmMaxOverride > 0 then
-		effectiveMaxRpm = math.min(effectiveMaxRpm, rpmMaxOverride)
-	end
-	if failed then
-		effectiveMaxRpm = 0
-	end
-	local effectiveIdleRpm = math.min(idleRpm, math.max(0, effectiveMaxRpm))
-	if engineOn and not failed then
-		local throttleNorm = self:getThrottleNorm(state) * self:resolveWearPowerFraction()
-		local speedRef = tonumber(EngineConfig.EngineState and EngineConfig.EngineState.SpeedToRPMReferenceMph) or 140
-		local speedNorm = math.clamp((tonumber(state.Speed and state.Speed.Value) or 0) / math.max(1, speedRef), 0, 1)
-		local freeRev = self:isFreeRevCondition(state)
-		local speedInput = freeRev and 0 or (speedNorm * 0.8)
-		local targetRpm = effectiveIdleRpm
-		if effectiveMaxRpm > effectiveIdleRpm then
-			targetRpm = effectiveIdleRpm + ((effectiveMaxRpm - effectiveIdleRpm) * math.max(throttleNorm, speedInput))
-		end
-		state.EngineRPM.Value = math.clamp(targetRpm, effectiveIdleRpm, effectiveMaxRpm)
-		state.EngineRPM.Value = self:applyMisfire(dt, state.EngineRPM.Value, throttleNorm)
-	else
-		state.EngineRPM.Value = 0
-	end
-	if engineOn and not failed and (tick() - self.RPMHintStamp) <= 0.35 and type(self.RPMHintValue) == "number" then
-		local hintedRpm = math.clamp(tonumber(self.RPMHintValue) or 0, effectiveIdleRpm, effectiveMaxRpm)
-		state.EngineRPM.Value = math.max(state.EngineRPM.Value, hintedRpm)
-	end
+	-- RPM is managed by the A-Chassis Drive script via the Values.RPM NumberValue.
+	-- The Engine plugin must NOT write to state.EngineRPM (which aliases Values.RPM).
 	-- (Engine sound pitch update removed)
 	local tempCfg = EngineConfig.EngineTemp or {}
 	if tempCfg.Enabled ~= false then
@@ -550,6 +600,20 @@ function Engine:update(dt)
 		local lowThreshold = tonumber(batteryCfg.LowThreshold) or 25
 		state.BatteryLow.Value = batteryPercent <= lowThreshold
 	end
+	-- Battery condition (health) degradation
+	if batteryCfg.Enabled ~= false and state.BatteryCondition then
+		local condition = math.clamp(tonumber(state.BatteryCondition.Value) or 100, 0, 100)
+		if engineOn then
+			local degradationRate = tonumber(batteryCfg.ConditionDegradationRate) or 0.0001
+			local battPct = math.clamp(tonumber(state.BatteryPercent and state.BatteryPercent.Value) or 100, 0, 100)
+			local critThreshold = tonumber(batteryCfg.CriticalThreshold) or 10
+			if battPct <= critThreshold then
+				degradationRate = degradationRate * (tonumber(batteryCfg.ConditionDeepDischargeMultiplier) or 3)
+			end
+			condition = math.max(0, condition - (degradationRate * (tonumber(dt) or 0)))
+		end
+		state.BatteryCondition.Value = condition
+	end
 	local coolantCfg = EngineConfig.CoolantSystem or {}
 	if coolantCfg.Enabled ~= false and state.CoolantLevel and state.CoolantPressure and state.CoolantWarning then
 		local coolantLevel = math.clamp(tonumber(state.CoolantLevel.Value) or 100, 0, 100)
@@ -570,6 +634,29 @@ function Engine:update(dt)
 	else
 		state.CoolantCritical = false
 	end
+	-- Coolant temperature simulation
+	if coolantCfg.Enabled ~= false and state.CoolantTemp then
+		local ambientTemp = tonumber((EngineConfig.EngineTemp or {}).Ambient) or 80
+		local tempAtIdle = tonumber(coolantCfg.TempAtIdle) or 180
+		local tempAtRedline = tonumber(coolantCfg.TempAtRedline) or 230
+		local warmupRate = tonumber(coolantCfg.TempWarmupRate) or 15
+		local cooldownRate = tonumber(coolantCfg.TempCooldownRate) or 10
+		local coolantLevelNorm = math.clamp((tonumber(state.CoolantLevel and state.CoolantLevel.Value) or 100) / 100, 0, 1)
+		if engineOn then
+			local rpmNorm = math.clamp((maxRpm > 0) and ((tonumber(state.EngineRPM.Value) or 0) / maxRpm) or 0, 0, 1)
+			local targetTemp = tempAtIdle + (tempAtRedline - tempAtIdle) * rpmNorm
+			local coolantFactor = 1 + ((1 - coolantLevelNorm) * 0.8)
+			local effectiveWarmup = warmupRate * coolantFactor
+			local t = math.clamp((effectiveWarmup * (tonumber(dt) or 0)) / math.max(1, tempAtRedline - ambientTemp), 0, 1)
+			local coolantTempNow = tonumber(state.CoolantTemp.Value) or ambientTemp
+			state.CoolantTemp.Value = coolantTempNow + (targetTemp - coolantTempNow) * t
+		else
+			local t = math.clamp((cooldownRate * (tonumber(dt) or 0)) / math.max(1, tempAtRedline - ambientTemp), 0, 1)
+			local coolantTempNow = tonumber(state.CoolantTemp.Value) or ambientTemp
+			state.CoolantTemp.Value = coolantTempNow + (ambientTemp - coolantTempNow) * t
+		end
+		state.CoolantTemp.Value = math.clamp(tonumber(state.CoolantTemp.Value) or ambientTemp, ambientTemp, tempAtRedline + 30)
+	end
 	local oilCfg = EngineConfig.OilPressure or {}
 	if oilCfg.Enabled ~= false and state.OilPressure and state.OilPressureWarning then
 		local pressureIdle = tonumber(oilCfg.PressureAtIdle) or 24
@@ -578,9 +665,29 @@ function Engine:update(dt)
 		local rpmNorm = math.clamp((maxRpm > 0) and ((tonumber(state.EngineRPM.Value) or 0) / maxRpm) or 0, 0, 1)
 		local wearNorm = math.clamp((tonumber(state.EngineWear and state.EngineWear.Value) or 100) / 100, 0, 1)
 		local basePressure = pressureIdle + ((pressureRedline - pressureIdle) * rpmNorm)
-		state.OilPressure.Value = math.max(0, basePressure * (1 - ((1 - wearNorm) * wearPenaltyScale)))
+		local oilLevelNorm = math.clamp((tonumber(state.OilLevel and state.OilLevel.Value) or 100) / 100, 0, 1)
+		state.OilPressure.Value = math.max(0, basePressure * (1 - ((1 - wearNorm) * wearPenaltyScale)) * oilLevelNorm)
 		local warningThreshold = tonumber(oilCfg.WarningThreshold) or 18
 		state.OilPressureWarning.Value = engineOn and state.OilPressure.Value <= warningThreshold or false
+	end
+	-- Oil level simulation
+	local oilLevelCfg = EngineConfig.OilSystem or {}
+	if oilLevelCfg.Enabled ~= false and state.OilLevel then
+		local oilLevel = math.clamp(tonumber(state.OilLevel.Value) or 100, 0, 100)
+		if engineOn then
+			local rpmNorm = math.clamp((maxRpm > 0) and ((tonumber(state.EngineRPM.Value) or 0) / maxRpm) or 0, 0, 1)
+			local throttleNorm = self:getThrottleNorm(state)
+			local burnRate = tonumber(oilLevelCfg.BurnRateIdle) or 0.0005
+			burnRate = burnRate + (tonumber(oilLevelCfg.BurnRateLoad) or 0.003) * rpmNorm * throttleNorm
+			local wearLoss = 1 - math.clamp((tonumber(state.EngineWear and state.EngineWear.Value) or 100) / 100, 0, 1)
+			burnRate = burnRate * (1 + wearLoss * 2)
+			oilLevel = math.max(0, oilLevel - (burnRate * (tonumber(dt) or 0)))
+		end
+		local leakRate = math.max(0, tonumber(oilLevelCfg.LeakRate) or 0)
+		if leakRate > 0 then
+			oilLevel = math.max(0, oilLevel - (leakRate * (tonumber(dt) or 0)))
+		end
+		state.OilLevel.Value = oilLevel
 	end
 	local wearCfg = EngineConfig.EngineWear or {}
 	if wearCfg.Enabled ~= false and state.EngineWear then
@@ -663,8 +770,247 @@ function Engine:update(dt)
 			state.EngineRPMMaxOverride.Value = 0
 		end
 	end
+	-- Dashboard indicator lights
+	if state.OilLight then
+		local oilPressureWarning = state.OilPressureWarning and state.OilPressureWarning.Value or false
+		local oilLevelCritical = (math.clamp(tonumber(state.OilLevel and state.OilLevel.Value) or 100, 0, 100)) <= (tonumber((EngineConfig.OilSystem or {}).CriticalLevel) or 10)
+		state.OilLight.Value = oilPressureWarning or oilLevelCritical
+	end
+	if state.CoolantLight then
+		local coolantWarning = state.CoolantWarning and state.CoolantWarning.Value or false
+		local coolantTempOverheat = (tonumber(state.CoolantTemp and state.CoolantTemp.Value) or 0) >= (tonumber((EngineConfig.CoolantSystem or {}).TempWarningThreshold) or 230)
+		state.CoolantLight.Value = coolantWarning or coolantTempOverheat
+	end
+	-- Update CheckEngine to include oil and coolant lights
+	if state.CheckEngine then
+		state.CheckEngine.Value = state.CheckEngine.Value
+			or (state.OilLight and state.OilLight.Value or false)
+			or (state.CoolantLight and state.CoolantLight.Value or false)
+	end
+	-- Periodic sync to server for DataStore persistence
+	self._engineSyncTimer = (self._engineSyncTimer or 0) + (tonumber(dt) or 0)
+	if self._engineSyncTimer >= ENGINE_SYNC_INTERVAL then
+		self._engineSyncTimer = 0
+		local syncRemote = ReplicatedStorage:FindFirstChild("EngineSyncRemote")
+		if syncRemote and syncRemote:IsA("RemoteEvent") then
+			local vehicleId = self.VehicleModel and self.VehicleModel.Name or "default"
+			syncRemote:FireServer(vehicleId, {
+				EngineWear = tonumber(state.EngineWear and state.EngineWear.Value) or 100,
+				EngineTemp = tonumber(state.EngineTemp and state.EngineTemp.Value) or 80,
+				CoolantLevel = tonumber(state.CoolantLevel and state.CoolantLevel.Value) or 100,
+				CoolantTemp = tonumber(state.CoolantTemp and state.CoolantTemp.Value) or 180,
+				OilLevel = tonumber(state.OilLevel and state.OilLevel.Value) or 100,
+				OilPressure = tonumber(state.OilPressure and state.OilPressure.Value) or 24,
+				BatteryPercent = tonumber(state.BatteryPercent and state.BatteryPercent.Value) or 100,
+				BatteryCondition = tonumber(state.BatteryCondition and state.BatteryCondition.Value) or 100,
+				MaintenanceMilesRemaining = tonumber(state.MaintenanceMilesRemaining and state.MaintenanceMilesRemaining.Value) or 5000,
+				CheckEngine = state.CheckEngine and state.CheckEngine.Value or false,
+			})
+		end
+	end
 end
 function Engine.getConfig()
 	return EngineConfig
 end
+
+--====================================================================
+-- Value Synchronization (mirrors Fuel plugin pattern)
+--====================================================================
+
+local function ensureValue(parent, name, className)
+	local existing = parent:FindFirstChild(name)
+	if existing and existing.ClassName == className then
+		return existing
+	end
+	if existing then
+		existing:Destroy()
+	end
+	local value = Instance.new(className)
+	value.Name = name
+	value.Parent = parent
+	value:SetAttribute("VOE_Owner", "Engine")
+	value:SetAttribute("VOE_Type", "State")
+	return value
+end
+
+function Engine:syncValuesFolder()
+	if not self.ValuesFolder then return end
+	if not self._valuesCache then
+		self._valuesCache = {}
+	end
+
+	-- Values that are aliased to A-Chassis Values folder entries;
+	-- skip writing these to avoid duplication.
+	local ALIASED = {
+		EngineRPM = true,
+	}
+
+	local numberStates = {
+		"EngineRPM", "EngineTemp", "EngineWear", "BatteryPercent",
+		"BatteryVoltage", "CoolantLevel", "CoolantPressure", "CoolantTemp",
+		"OilPressure", "OilLevel", "BatteryCondition", "MaintenanceMilesRemaining",
+	}
+	local boolStates = {
+		"Running", "BatteryLow", "AlternatorOn", "CoolantWarning",
+		"EngineLimpMode", "CheckEngine", "MaintenanceDue", "OilPressureWarning",
+		"OilLight", "CoolantLight",
+	}
+
+	for _, name in ipairs(numberStates) do
+		if ALIASED[name] then continue end
+		local s = self.State[name]
+		if s then
+			local v = self._valuesCache[name] or ensureValue(self.ValuesFolder, name, "NumberValue")
+			self._valuesCache[name] = v
+			v.Value = tonumber(s.Value) or 0
+		end
+	end
+	for _, name in ipairs(boolStates) do
+		if ALIASED[name] then continue end
+		local s = self.State[name]
+		if s then
+			local v = self._valuesCache[name] or ensureValue(self.ValuesFolder, name, "BoolValue")
+			self._valuesCache[name] = v
+			v.Value = s.Value == true
+		end
+	end
+end
+
+function Engine:syncOutputs()
+	if self.VehicleModel then
+		local numberAttrs = {
+			"EngineRPM", "EngineTemp", "EngineWear", "BatteryPercent",
+			"BatteryVoltage", "CoolantLevel", "CoolantPressure", "CoolantTemp",
+			"OilPressure", "OilLevel", "BatteryCondition", "MaintenanceMilesRemaining",
+		}
+		local boolAttrs = {
+			"Running", "BatteryLow", "AlternatorOn", "CoolantWarning",
+			"EngineLimpMode", "CheckEngine", "MaintenanceDue", "OilPressureWarning",
+			"OilLight", "CoolantLight",
+		}
+
+		for _, name in ipairs(numberAttrs) do
+			local s = self.State[name]
+			if s then
+				self.VehicleModel:SetAttribute(name, tonumber(s.Value) or 0)
+			end
+		end
+		for _, name in ipairs(boolAttrs) do
+			local s = self.State[name]
+			if s then
+				self.VehicleModel:SetAttribute(name, s.Value == true)
+			end
+		end
+	end
+
+	self:syncValuesFolder()
+end
+
+--====================================================================
+-- Initialization (mirrors Fuel plugin pattern)
+--====================================================================
+
+task.defer(function()
+	local vehicle, valuesFolder, pluginContainer, achassisValues = findRuntimeCarAndValues()
+	if not vehicle then
+		warn("[Engine] Could not find vehicle model")
+		return
+	end
+
+	local context = {
+		VehicleModel = vehicle,
+		Values = valuesFolder,
+		Seat = vehicle:FindFirstChild("DriveSeat"),
+		State = {},
+		PluginContainer = pluginContainer,
+		AChassisValues = achassisValues,
+		CollectionService = CollectionService,
+		Config = EngineConfig,
+	}
+
+	-- Values that already exist in the A-Chassis Values folder and should NOT
+	-- be recreated in VOE_State. Map of StateValue name → A-Chassis value name.
+	local CHASSIS_VALUE_ALIASES = {
+		EngineRPM = "RPM",
+	}
+
+	-- Initialize state values in the Values folder (just like Fuel)
+	for stateName, spec in pairs(Engine.getPluginInfo().StateValues) do
+		-- Skip values that already exist in the A-Chassis Values folder
+		local chassisAlias = CHASSIS_VALUE_ALIASES[stateName]
+		if chassisAlias and achassisValues then
+			local existing = achassisValues:FindFirstChild(chassisAlias)
+			if existing then
+				context.State[stateName] = existing
+				continue
+			end
+		end
+
+		local existing = valuesFolder:FindFirstChild(stateName)
+		if not existing then
+			local value = Instance.new(spec.ClassName)
+			value.Name = stateName
+			value.Value = spec.Default
+			value.Parent = valuesFolder
+		end
+		context.State[stateName] = valuesFolder:FindFirstChild(stateName)
+	end
+
+	local plugin = Engine.create(context)
+	plugin.ValuesFolder = valuesFolder
+
+	-- Find the IsOn value from the cloned A-Chassis Interface (the one the Drive
+	-- script actually updates). Without this, isEngineOn() would search the
+	-- VehicleModel in Workspace and find the original (never-updated) IsOn.
+	local isOnValue = pluginContainer:FindFirstChild("IsOn")
+	if isOnValue and isOnValue:IsA("BoolValue") then
+		plugin._ignitionIsOnValue = isOnValue
+	end
+
+	plugin:setup()
+
+	-- ====================================================================
+	-- AudioRuntime: Engine plugin handles its own engine sounds.
+	-- The Sounds plugin stays disabled; we only read its Sound instances
+	-- as templates (they carry attributes, EQ/Distortion effects, etc.).
+	-- ====================================================================
+	local AudioRuntimeModule = script:FindFirstChild("Sounds")
+	local soundsScript = pluginContainer:FindFirstChild("Sounds")
+
+	if AudioRuntimeModule and soundsScript then
+		local DIRECTORY = vehicle.Body:FindFirstChild("Sounds")
+		local soundsEvent = vehicle:FindFirstChild("Sounds")
+			and vehicle.Sounds:IsA("UnreliableRemoteEvent")
+			and vehicle.Sounds or nil
+
+		local ok, makeAudioRuntime = pcall(require, AudioRuntimeModule)
+		if ok and makeAudioRuntime then
+			local audioRuntime = makeAudioRuntime(
+				vehicle,
+				achassisValues or valuesFolder,
+				soundsEvent,
+				DIRECTORY,
+				soundsScript,
+				isOnValue
+			)
+			audioRuntime:Start()
+			debugLog("Audio", "Engine audio runtime started")
+		else
+			warn("[Engine] Failed to load AudioRuntime module")
+		end
+	else
+		if not AudioRuntimeModule then
+			warn("[Engine] AudioRuntime module not found under Engine script")
+		end
+		if not soundsScript then
+			warn("[Engine] Sounds script not found in plugin container")
+		end
+	end
+
+	RunService.Heartbeat:Connect(function(dt)
+		plugin:update(dt)
+		plugin:syncOutputs()
+	end)
+end)
+
 return Engine
