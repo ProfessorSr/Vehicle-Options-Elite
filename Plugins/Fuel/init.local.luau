@@ -47,12 +47,12 @@ local function findRuntimeCarAndValues()
 			voeState = vehicle:FindFirstChild("VOE_State") or vehicle:WaitForChild("VOE_State", 5)
 		end
 		if voeState then
-			return vehicle, voeState
+			return vehicle, voeState, pluginContainer, valuesFolder
 		end
 		-- Fallback to Values folder (legacy)
-		return vehicle, valuesFolder
+		return vehicle, valuesFolder, pluginContainer, valuesFolder
 	end
-	return nil, valuesFolder
+	return nil, valuesFolder, pluginContainer, valuesFolder
 end
 
 --====================================================================
@@ -171,6 +171,24 @@ function Fuel.create(context)
 	context.State.GasDoor = valuesFolder and valuesFolder:FindFirstChild("GasDoor") or nil
 	context.State.FuelCap = valuesFolder and valuesFolder:FindFirstChild("FuelCap") or nil
 
+	-- Look up IsOn (A-Chassis engine state) from the plugin container (A-Chassis Interface)
+	local pluginContainer = context.PluginContainer
+	if pluginContainer then
+		local isOn = pluginContainer:FindFirstChild("IsOn")
+		if isOn and isOn:IsA("BoolValue") then
+			context.State.IsOn = isOn
+		end
+	end
+
+	-- Look up Velocity from A-Chassis Values folder for speed calculation
+	local achassisValues = context.AChassisValues
+	if achassisValues then
+		local velocity = achassisValues:FindFirstChild("Velocity")
+		if velocity and velocity:IsA("Vector3Value") then
+			context.State.Velocity = velocity
+		end
+	end
+
 	return setmetatable({
 		State = context.State,
 		VehicleModel = context.VehicleModel,
@@ -181,6 +199,9 @@ function Fuel.create(context)
 end
 
 local function getEngineRunningState(state)
+	if state.IsOn and state.IsOn:IsA("BoolValue") then
+		return state.IsOn.Value
+	end
 	if state.EngineOn and state.EngineOn:IsA("BoolValue") then
 		return state.EngineOn.Value
 	end
@@ -191,6 +212,9 @@ local function getEngineRunningState(state)
 end
 
 local function forceEngineOff(state)
+	if state.IsOn and state.IsOn:IsA("BoolValue") then
+		state.IsOn.Value = false
+	end
 	if state.EngineOn and state.EngineOn:IsA("BoolValue") then
 		state.EngineOn.Value = false
 	end
@@ -396,7 +420,10 @@ function Fuel:update(dt)
 		return
 	end
 	local throttle = self.Seat and self.Seat.ThrottleFloat or 0
-	local speed = tonumber(self.State.Speed and self.State.Speed.Value) or 0
+	local speed = 0
+	if self.State.Velocity and self.State.Velocity:IsA("Vector3Value") then
+		speed = self.State.Velocity.Value.Magnitude
+	end
 	local throttleNorm = math.clamp(math.abs(tonumber(throttle) or 0), 0, 1)
 	local speedNorm = math.clamp(speed / 140, 0, 1)
 	local burnRatePercent = (tonumber(self.Config.BurnRateIdlePercent) or 0.0015) + (tonumber(self.Config.BurnRateLoadPercent) or 0.015) * math.max(throttleNorm, speedNorm)
@@ -419,7 +446,7 @@ end
 --====================================================================
 
 task.defer(function()
-	local vehicle, valuesFolder = findRuntimeCarAndValues()
+	local vehicle, valuesFolder, pluginContainer, achassisValues = findRuntimeCarAndValues()
 	if not vehicle then
 		warn("[Fuel] Could not find vehicle model")
 		return
@@ -430,6 +457,8 @@ task.defer(function()
 		Values = valuesFolder,
 		Seat = vehicle:FindFirstChild("DriveSeat"),
 		State = {},
+		PluginContainer = pluginContainer,
+		AChassisValues = achassisValues,
 	}
 
 	-- Initialize state values

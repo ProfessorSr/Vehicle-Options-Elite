@@ -72,13 +72,13 @@ Config.Openables = {
 	-- Maximum servo torque applied to the right headlight wiper hinge.
 	WiperLeft = {
 	MinAngle = 5,
-	MaxAngle = -75,
+	MaxAngle = 75,
 	OpenSpeed = 8.0,
 	OpenTorque = 12000,
 },
 	WiperRight = {
 	MinAngle = 5,
-	MaxAngle = -75,
+	MaxAngle = 75,
 	OpenSpeed = 8.0,
 	OpenTorque = 12000,
 },

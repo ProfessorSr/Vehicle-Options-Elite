@@ -631,6 +631,8 @@ end
 local HINGED_PAIRS = {
 	{RootTag = "VOE_Hood_Root", PartTag = "VOE_Hood_Part"},
 	{RootTag = "VOE_Trunk_Root", PartTag = "VOE_Trunk_Part"},
+	{RootTag = "VOE_WiperLeft_Root", PartTag = "VOE_WiperLeft_Part"},
+	{RootTag = "VOE_WiperRight_Root", PartTag = "VOE_WiperRight_Part"},
 }
 
 for _, pair in ipairs(HINGED_PAIRS) do
