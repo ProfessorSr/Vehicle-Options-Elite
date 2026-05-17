@@ -30,6 +30,40 @@ if not voeState then
 end
 
 --====================================================================
+-- PERSISTENCE ATTRIBUTES (ensure attributes exist on vehicle)
+-- These attributes are created at rig bootstrap so they're available
+-- immediately when the vehicle spawns (before players sit in seats).
+--====================================================================
+
+local function ensureNumberAttr(name, default)
+	if vehicleModel:GetAttribute(name) == nil then
+		vehicleModel:SetAttribute(name, default)
+	end
+end
+
+local function ensureBoolAttr(name, default)
+	if vehicleModel:GetAttribute(name) == nil then
+		vehicleModel:SetAttribute(name, default)
+	end
+end
+
+-- Engine-related
+ensureNumberAttr("EngineWear", 100)
+ensureNumberAttr("MaintenanceMilesRemaining", 0)
+ensureNumberAttr("CoolantLevel", 100)
+ensureNumberAttr("EngineTemp", 20)
+ensureNumberAttr("OilPressure", 100)
+ensureBoolAttr("CheckEngine", false)
+
+-- Fuel-related (basic defaults; Fuel plugin will override on setup)
+ensureNumberAttr("FuelGallons", 0)
+ensureNumberAttr("FuelCapacityGallons", 18)
+ensureNumberAttr("FuelLevel", 0)
+ensureBoolAttr("FuelEmpty", false)
+ensureBoolAttr("FuelLimpMode", false)
+
+
+--====================================================================
 -- HELPERS
 --====================================================================
 

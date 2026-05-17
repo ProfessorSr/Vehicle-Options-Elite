@@ -4,11 +4,12 @@
 --
 -- DESCRIPTION:
 -- Manages fuel consumption, refueling, and empty behavior
+-- Now with DataStore persistence via server-side FuelPersistence script.
 --
 -- NOTES:
 -- - Tag-driven system (no part hierarchy assumptions)
-
 -- - Clean, modular, no deprecated code
+-- - Fuel syncs to server every 5 seconds and on refuel for DataStore persistence
 
 --====================================================================
 -- Module Requires
@@ -28,6 +29,10 @@ end
 --====================================================================
 
 local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Fuel sync interval: how often (in seconds) the client sends fuel updates to the server.
+local FUEL_SYNC_INTERVAL = 5
 
 --====================================================================
 -- Context Resolution
@@ -195,6 +200,7 @@ function Fuel.create(context)
 		Seat = context.Seat,
 		Config = FuelConfig,
 		ValuesFolder = valuesFolder,
+		_fuelSyncTimer = 0, -- tracks time since last server sync
 	}, Fuel)
 end
 
@@ -284,26 +290,58 @@ function Fuel:getStartingGallons()
 end
 
 --====================================================================
+-- Server Sync (DataStore Persistence)
+--====================================================================
+
+function Fuel:syncFuelToServer()
+	local fuelSyncRemote = ReplicatedStorage:FindFirstChild("FuelSyncRemote")
+	if fuelSyncRemote then
+		local vehicleId = self.VehicleModel and self.VehicleModel:GetAttribute("VehicleId") or "default"
+		fuelSyncRemote:FireServer(vehicleId, tonumber(self.State.FuelGallons.Value) or 0)
+	end
+end
+
+function Fuel:loadSavedFuelFromServer()
+	local fuelLoadRemote = ReplicatedStorage:FindFirstChild("FuelLoadRemote")
+	if not fuelLoadRemote then
+		return nil
+	end
+	local vehicleId = self.VehicleModel and self.VehicleModel:GetAttribute("VehicleId") or "default"
+	local ok, savedGallons = pcall(function()
+		return fuelLoadRemote:InvokeServer(vehicleId)
+	end)
+	if ok and type(savedGallons) == "number" then
+		return savedGallons
+	end
+	return nil
+end
+
+--====================================================================
 -- Setup Functions
 --====================================================================
 
 function Fuel:setup()
 
 	setupPluginSounds(self.VehicleModel)
-	-- If the server DataStore loader stamped a saved value onto the car, resume from it.
-	-- Otherwise fall back to Config.StartingGallons (or full tank if nil).
+
+	-- Try to load saved fuel from DataStore via server RemoteFunction.
+	-- This replaces the old SavedFuelGallons attribute approach, which was
+	-- unreliable because the server ModuleScript was never executed.
 	local startGallons = self:getStartingGallons()
-	if self.VehicleModel then
-		local saved = self.VehicleModel:GetAttribute("SavedFuelGallons")
-		if type(saved) == "number" then
-			startGallons = math.clamp(saved, 0, self:getCapacityGallons())
-			-- Clear the stamp so a second setup() call doesn't re-use a stale value.
-			self.VehicleModel:SetAttribute("SavedFuelGallons", nil)
+	local savedGallons = self:loadSavedFuelFromServer()
+	if savedGallons ~= nil then
+		startGallons = math.clamp(savedGallons, 0, self:getCapacityGallons())
+		if FuelConfig.Debug and FuelConfig.Debug.Enabled then
+			debugLog("Setup", "Loaded saved fuel from DataStore: " .. tostring(startGallons) .. " gallons")
 		end
 	end
+
 	self.State.FuelGallons.Value = startGallons
 	self.State.FuelLimpMode.Value = false
 	self:syncOutputs()
+
+	-- Immediately sync the starting fuel to the server so it has a baseline.
+	self:syncFuelToServer()
 end
 
 --====================================================================
@@ -390,6 +428,10 @@ function Fuel:handleAction(action, payload)
 	end
 	self:syncOutputs()
 	self:applyEmptyBehavior()
+
+	-- Sync fuel to server immediately after a refuel action
+	self:syncFuelToServer()
+
 	return true
 end
 
@@ -431,6 +473,13 @@ function Fuel:update(dt)
 	self.State.FuelGallons.Value = math.clamp((tonumber(self.State.FuelGallons.Value) or 0) - burnGallons, 0, capacity)
 	self:syncOutputs()
 	self:applyEmptyBehavior()
+
+	-- Periodically sync fuel level to the server for DataStore persistence
+	self._fuelSyncTimer = self._fuelSyncTimer + dt
+	if self._fuelSyncTimer >= FUEL_SYNC_INTERVAL then
+		self._fuelSyncTimer = 0
+		self:syncFuelToServer()
+	end
 end
 
 --====================================================================
@@ -482,4 +531,3 @@ task.defer(function()
 	end)
 
 return Fuel
-

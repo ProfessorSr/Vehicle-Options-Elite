@@ -158,7 +158,7 @@ function Engine.getPluginInfo()
 end
 function Engine.create(context)
 	local partAccess = PartAccess.new(context.CollectionService, context.VehicleModel)
-	return setmetatable({
+	local inst = setmetatable({
 		State = context.State,
 		GlobalConfig = context.Config,
 		VehicleModel = context.VehicleModel,
@@ -176,11 +176,70 @@ function Engine.create(context)
 		RPMHintStamp = 0,
 		ResolvedIdleRPM = nil,
 		ResolvedMaxRPM = nil,
-		ExhaustAssemblies = {},
-		ExhaustTime = 0,
 		EngineWearAccumulator = 0,
 		MaintenanceAccumulator = 0,
+		_lastTotalDamage = 0,
+		_engineFailed = false,
+		_misfireRemaining = 0,
 	}, Engine)
+
+	-- Attribute persistence: read any existing attributes on the vehicle and
+	-- keep attributes updated when important state values change. Attributes
+	-- are authoritative on the server and safe for client read-only visibility.
+	local function tryReadNumber(model, name)
+		if not model then return nil end
+		local v = model:GetAttribute(name)
+		if v == nil then return nil end
+		return tonumber(v)
+	end
+	local function tryReadBool(model, name)
+		if not model then return nil end
+		local v = model:GetAttribute(name)
+		if v == nil then return nil end
+		return v == true
+	end
+
+	if inst.VehicleModel and inst.State then
+		local syncList = {
+			{attr = "EngineWear", state = "EngineWear", kind = "number"},
+			{attr = "MaintenanceMilesRemaining", state = "MaintenanceMilesRemaining", kind = "number"},
+			{attr = "CoolantLevel", state = "CoolantLevel", kind = "number"},
+			{attr = "EngineTemp", state = "EngineTemp", kind = "number"},
+			{attr = "OilPressure", state = "OilPressure", kind = "number"},
+			{attr = "CheckEngine", state = "CheckEngine", kind = "bool"},
+		}
+
+		for _, spec in ipairs(syncList) do
+			local s = inst.State[spec.state]
+			if s and s.Parent then
+				-- read attribute if present
+				if spec.kind == "number" then
+					local n = tryReadNumber(inst.VehicleModel, spec.attr)
+					if n ~= nil then
+						pcall(function() s.Value = n end)
+					end
+				else
+					local b = tryReadBool(inst.VehicleModel, spec.attr)
+					if b ~= nil then
+						pcall(function() s.Value = b end)
+					end
+				end
+
+				-- write back on change
+				s.Changed:Connect(function()
+					if not inst.VehicleModel then return end
+					local v = s.Value
+					if spec.kind == "number" then
+						inst.VehicleModel:SetAttribute(spec.attr, tonumber(v) or 0)
+					else
+						inst.VehicleModel:SetAttribute(spec.attr, v == true)
+					end
+				end)
+			end
+		end
+	end
+
+	return inst
 end
 local TUNE_VALUE_ALIASES = {
 	IdleRPM = { "IdleRPM", "IdleRpm", "Idle", "IdleSpeed", "EngineIdleRPM" },
@@ -230,71 +289,6 @@ function Engine:collectTaggedParts(tagName, resolveFn)
 	end
 	return out
 end
-function Engine:ensureExhaustMotor(rootPart, roleName)
-	local motorName = "VOE_EngineMotor_" .. roleName
-	local existing = rootPart:FindFirstChild(motorName)
-	if existing and existing:IsA("Motor6D") then
-		return existing
-	end
-	local pivot = rootPart:FindFirstChild(EngineTags.Optional.MotorPivot)
-	local pivotCFrame = (pivot and pivot:IsA("Attachment")) and pivot.WorldCFrame or rootPart.CFrame
-	local motor = Instance.new("Motor6D")
-	motor.Name = motorName
-	motor.Part0 = self.Seat
-	motor.Part1 = rootPart
-	motor.C0 = self.Seat.CFrame:ToObjectSpace(pivotCFrame)
-	motor.C1 = rootPart.CFrame:ToObjectSpace(pivotCFrame)
-	motor.Parent = rootPart
-	return motor
-end
-function Engine:setupExhaust()
-	self.ExhaustAssemblies = {}
-	local roots = self:collectTaggedParts(EngineTags.Required.Exhaust.Root, self.ResolveRootPart)
-	local parts = self:collectTaggedParts(EngineTags.Required.Exhaust.Part, self.ResolveBasePart)
-	for index, rootPart in ipairs(roots) do
-		local partSet = {[rootPart] = true}
-		local allParts = {rootPart}
-		for _, part in ipairs(parts) do
-			if part ~= rootPart then
-				partSet[part] = true
-				table.insert(allParts, part)
-			end
-		end
-		ensureWeldedToRoot(rootPart, allParts, "VOE_EngineWeld_Exhaust")
-		local motor = self:ensureExhaustMotor(rootPart, "Exhaust" .. tostring(index))
-		table.insert(self.ExhaustAssemblies, {
-			Part = rootPart,
-			Motor = motor,
-		})
-	end
-end
-function Engine:applyExhaustShake(dt)
-	local exhaustCfg = EngineConfig.ExhaustMotion or {}
-	if exhaustCfg.Enabled == false or #self.ExhaustAssemblies == 0 then
-		return
-	end
-	local maxRpm = math.max(1, self:resolveMaxRPM())
-	local rpm = math.max(0, tonumber(self.State.EngineRPM and self.State.EngineRPM.Value) or 0)
-	local rpmNorm = math.clamp(rpm / maxRpm, 0, 1)
-	self.ExhaustTime += tonumber(dt) or 0
-	for idx, assembly in ipairs(self.ExhaustAssemblies) do
-		if assembly.Motor and assembly.Motor.Parent and assembly.Part and assembly.Part.Parent then
-			local part = assembly.Part
-			local freqIdle = tonumber(part:GetAttribute(EngineTags.Optional.ShakeFreqIdle)) or tonumber(exhaustCfg.FrequencyAtIdle) or 10
-			local freqRedline = tonumber(part:GetAttribute(EngineTags.Optional.ShakeFreqRedline)) or tonumber(exhaustCfg.FrequencyAtRedline) or 28
-			local frequency = freqIdle + (freqRedline - freqIdle) * rpmNorm
-			local phase = self.ExhaustTime * frequency * math.pi * 2
-			local moveAxis = axisVector(part:GetAttribute(EngineTags.Optional.ShakeAxis), exhaustCfg.Axis or "X")
-			local rotateAxis = axisVector(part:GetAttribute(EngineTags.Optional.ShakeRotateAxis), exhaustCfg.RotateAxis or "Z")
-			local amplitudeStuds = tonumber(part:GetAttribute(EngineTags.Optional.ShakeAmplitudeStuds)) or tonumber(exhaustCfg.AmplitudeStuds) or 0.015
-			local amplitudeDegrees = tonumber(part:GetAttribute(EngineTags.Optional.ShakeAmplitudeDegrees)) or tonumber(exhaustCfg.AmplitudeDegrees) or 1.25
-			local offset = math.sin(phase + idx * 0.65)
-			local translation = moveAxis * amplitudeStuds * rpmNorm * offset
-			local rotation = CFrame.fromAxisAngle(rotateAxis, math.rad(amplitudeDegrees) * rpmNorm * offset)
-			assembly.Motor.Transform = CFrame.new(translation) * rotation
-		end
-	end
-end
 function Engine:setup()
 	local ambientTemp = tonumber(EngineConfig.EngineTemp and EngineConfig.EngineTemp.Ambient) or 80
 	local batteryCfg = EngineConfig.BatterySystem or {}
@@ -320,7 +314,6 @@ function Engine:setup()
 	self.State.MaintenanceDue.Value = false
 	self.State.OilPressure.Value = tonumber(oilCfg.PressureAtIdle) or 24
 	self.State.OilPressureWarning.Value = false
-	self:setupExhaust()
 end
 function Engine:handleAction(action, payload)
 	if action == "SetRPMHint" and type(payload) == "number" then
@@ -400,6 +393,72 @@ function Engine:getThrottleNorm(state)
 	local guiThrottle = math.abs(self:getChassisNumber(state, "Throttle") or 0)
 	return math.clamp(math.max(seatThrottle, stateThrottle, guiThrottle), 0, 1)
 end
+function Engine:getDamageDelta()
+	local totalDamageValue = self.State.TotalDamage
+	if not totalDamageValue or not totalDamageValue:IsA("NumberValue") then
+		return 0
+	end
+	local current = math.max(0, tonumber(totalDamageValue.Value) or 0)
+	local previous = math.max(0, tonumber(self._lastTotalDamage) or 0)
+	self._lastTotalDamage = current
+	return math.max(0, current - previous)
+end
+function Engine:isEngineFailed()
+	local wear = math.clamp(tonumber(self.State.EngineWear and self.State.EngineWear.Value) or 100, 0, 100)
+	if wear <= 0 then
+		self._engineFailed = true
+	end
+	return self._engineFailed
+end
+function Engine:resolveWearRPMCap(maxRpm)
+	local cfg = EngineConfig.ProgressiveFailure or {}
+	local wear = math.clamp(tonumber(self.State.EngineWear and self.State.EngineWear.Value) or 100, 0, 100)
+	local startWear = tonumber(cfg.RPMCapStartWear) or 75
+	local minFraction = tonumber(cfg.RPMCapMinFraction) or 0.35
+	if wear >= startWear then
+		return maxRpm
+	end
+	local fraction = minFraction + (wear / math.max(1, startWear)) * (1 - minFraction)
+	return maxRpm * math.clamp(fraction, minFraction, 1)
+end
+function Engine:resolveWearPowerFraction()
+	local cfg = EngineConfig.ProgressiveFailure or {}
+	local wear = math.clamp(tonumber(self.State.EngineWear and self.State.EngineWear.Value) or 100, 0, 100)
+	local startWear = tonumber(cfg.PowerDropStartWear) or 60
+	local minFraction = tonumber(cfg.PowerMinFraction) or 0.30
+	if wear >= startWear then
+		return 1
+	end
+	return math.clamp(minFraction + (wear / math.max(1, startWear)) * (1 - minFraction), minFraction, 1)
+end
+function Engine:applyMisfire(dt, rpm, throttleNorm)
+	local cfg = EngineConfig.ProgressiveFailure or {}
+	if cfg.Enabled == false then
+		return rpm
+	end
+	local wear = math.clamp(tonumber(self.State.EngineWear and self.State.EngineWear.Value) or 100, 0, 100)
+	local threshold = tonumber(cfg.MisfireStartWear) or 50
+	if wear > threshold or throttleNorm <= 0.05 or rpm <= 0 then
+		self._misfireRemaining = math.max(0, (self._misfireRemaining or 0) - (tonumber(dt) or 0))
+		return rpm
+	end
+	if self._misfireRemaining > 0 then
+		self._misfireRemaining = math.max(0, self._misfireRemaining - (tonumber(dt) or 0))
+		local dropMin = tonumber(cfg.MisfireRPMDropMin) or 0.15
+		local dropMax = tonumber(cfg.MisfireRPMDropMax) or 0.40
+		local dropFraction = dropMin + (math.clamp((threshold - wear) / math.max(1, threshold), 0, 1) * (dropMax - dropMin))
+		return math.max(0, rpm * (1 - dropFraction))
+	end
+	local probability = math.clamp((threshold - wear) / math.max(1, threshold), 0, 1) * (tonumber(cfg.MisfireMaxProbability) or 0.35)
+	if math.random() < probability * math.clamp(tonumber(dt) or 0, 0, 1) then
+		self._misfireRemaining = tonumber(cfg.MisfireDuration) or 0.3
+		local dropMin = tonumber(cfg.MisfireRPMDropMin) or 0.15
+		local dropMax = tonumber(cfg.MisfireRPMDropMax) or 0.40
+		local dropFraction = dropMin + (math.clamp((threshold - wear) / math.max(1, threshold), 0, 1) * (dropMax - dropMin))
+		return math.max(0, rpm * (1 - dropFraction))
+	end
+	return rpm
+end
 function Engine:isFreeRevCondition(state)
 	local gear = self:getChassisNumber(state, "Gear")
 	local clutch = self:getChassisNumber(state, "Clutch")
@@ -416,32 +475,38 @@ function Engine:update(dt)
 	local idleRpm = self:resolveIdleRPM()
 	local maxRpm = self:resolveMaxRPM()
 	local engineOn = self:isEngineOn(state)
+	local failed = self:isEngineFailed()
 	if self.GlobalConfig.AutoRunningLightsOnOccupant then
 		state.Running.Value = self.Seat.Occupant ~= nil
 	else
-		state.Running.Value = engineOn
+		state.Running.Value = engineOn and not failed
 	end
 	local rpmMaxOverride = tonumber(state.EngineRPMMaxOverride and state.EngineRPMMaxOverride.Value) or 0
-	local effectiveMaxRpm = maxRpm
+	local effectiveMaxRpm = self:resolveWearRPMCap(maxRpm)
 	if rpmMaxOverride > 0 then
 		effectiveMaxRpm = math.min(effectiveMaxRpm, rpmMaxOverride)
 	end
-	if engineOn then
-		local throttleNorm = self:getThrottleNorm(state)
+	if failed then
+		effectiveMaxRpm = 0
+	end
+	local effectiveIdleRpm = math.min(idleRpm, math.max(0, effectiveMaxRpm))
+	if engineOn and not failed then
+		local throttleNorm = self:getThrottleNorm(state) * self:resolveWearPowerFraction()
 		local speedRef = tonumber(EngineConfig.EngineState and EngineConfig.EngineState.SpeedToRPMReferenceMph) or 140
 		local speedNorm = math.clamp((tonumber(state.Speed and state.Speed.Value) or 0) / math.max(1, speedRef), 0, 1)
 		local freeRev = self:isFreeRevCondition(state)
 		local speedInput = freeRev and 0 or (speedNorm * 0.8)
-		state.EngineRPM.Value = math.clamp(
-			idleRpm + ((effectiveMaxRpm - idleRpm) * math.max(throttleNorm, speedInput)),
-			idleRpm,
-			effectiveMaxRpm
-		)
+		local targetRpm = effectiveIdleRpm
+		if effectiveMaxRpm > effectiveIdleRpm then
+			targetRpm = effectiveIdleRpm + ((effectiveMaxRpm - effectiveIdleRpm) * math.max(throttleNorm, speedInput))
+		end
+		state.EngineRPM.Value = math.clamp(targetRpm, effectiveIdleRpm, effectiveMaxRpm)
+		state.EngineRPM.Value = self:applyMisfire(dt, state.EngineRPM.Value, throttleNorm)
 	else
 		state.EngineRPM.Value = 0
 	end
-	if engineOn and (tick() - self.RPMHintStamp) <= 0.35 and type(self.RPMHintValue) == "number" then
-		local hintedRpm = math.clamp(tonumber(self.RPMHintValue) or 0, idleRpm, effectiveMaxRpm)
+	if engineOn and not failed and (tick() - self.RPMHintStamp) <= 0.35 and type(self.RPMHintValue) == "number" then
+		local hintedRpm = math.clamp(tonumber(self.RPMHintValue) or 0, effectiveIdleRpm, effectiveMaxRpm)
 		state.EngineRPM.Value = math.max(state.EngineRPM.Value, hintedRpm)
 	end
 	-- (Engine sound pitch update removed)
@@ -523,11 +588,35 @@ function Engine:update(dt)
 		local updateRate = math.max(0.05, tonumber(wearCfg.UpdateRate) or 1)
 		if self.EngineWearAccumulator >= updateRate then
 			self.EngineWearAccumulator = 0
+			local wearDelta = 0
 			if engineOn then
 				local speedNorm = math.clamp((tonumber(state.Speed and state.Speed.Value) or 0) / 100, 0, 1)
 				local throttleNorm = self:getThrottleNorm(state)
-				local engineRate = (tonumber(wearCfg.BaseRate) or 0.02) * (0.3 + throttleNorm * 0.5 + speedNorm * 0.7)
-				state.EngineWear.Value = math.max(0, (tonumber(state.EngineWear.Value) or 0) - engineRate)
+				wearDelta = wearDelta + ((tonumber(wearCfg.BaseRate) or 0.02) * (0.3 + throttleNorm * 0.5 + speedNorm * 0.7))
+				if state.CoolantCritical then
+					wearDelta = wearDelta + (tonumber(wearCfg.CoolantCriticalWearRate) or 0.15)
+				end
+				local oilPressure = tonumber(state.OilPressure and state.OilPressure.Value) or 0
+				local oilCriticalThreshold = tonumber((EngineConfig.OilPressure or {}).CriticalThreshold) or 8
+				if oilPressure <= oilCriticalThreshold then
+					wearDelta = wearDelta + (tonumber(wearCfg.OilCriticalWearRate) or 0.12)
+				end
+				if state.MaintenanceDue and state.MaintenanceDue.Value then
+					wearDelta = wearDelta + (tonumber(wearCfg.MaintenanceOverdueWearRate) or 0.05)
+				end
+				local damageDelta = self:getDamageDelta()
+				if damageDelta > 0 then
+					wearDelta = wearDelta + (damageDelta * (tonumber(wearCfg.CollisionWearScale) or 0.08))
+				end
+				local engineTemp = tonumber(state.EngineTemp and state.EngineTemp.Value) or 0
+				local maxTemp = tonumber((EngineConfig.EngineTemp or {}).Max) or 260
+				if engineTemp >= maxTemp then
+					wearDelta = wearDelta + (tonumber(wearCfg.OverheatWearRate) or 0.10)
+				end
+			end
+			state.EngineWear.Value = math.max(0, (tonumber(state.EngineWear.Value) or 0) - wearDelta)
+			if state.EngineWear.Value <= 0 and (EngineConfig.EngineFailure or {}).Enabled ~= false then
+				self._engineFailed = true
 			end
 		end
 	end
@@ -574,7 +663,6 @@ function Engine:update(dt)
 			state.EngineRPMMaxOverride.Value = 0
 		end
 	end
-	self:applyExhaustShake(dt)
 end
 function Engine.getConfig()
 	return EngineConfig
