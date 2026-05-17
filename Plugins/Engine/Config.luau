@@ -25,7 +25,7 @@ Config.EngineState = {
 	SpeedToRPMReferenceMph = 140,
 }
 
--- Engine temperature simulation moved out of shared VehicleStats.
+-- Engine temperature simulation owned by this plugin.
 Config.EngineTemp = {
 	Enabled = true,
 	Ambient = 80,
@@ -41,8 +41,49 @@ Config.EngineTemp = {
 Config.EngineWear = {
 	Enabled = true,
 	StartingValue = 100,
+	-- Base wear rate per update cycle from normal driving (RPM + throttle + speed)
 	BaseRate = 0.02,
 	UpdateRate = 1,
+	-- Additional wear from running with critical coolant level
+	CoolantCriticalWearRate = 0.15,
+	-- Additional wear from running with critical oil pressure
+	OilCriticalWearRate = 0.12,
+	-- Additional wear from overdue maintenance
+	MaintenanceOverdueWearRate = 0.05,
+	-- Collision damage: how much TotalDamage (from Damage plugin) converts to engine wear
+	-- Each point of TotalDamage removes this much from EngineWear
+	CollisionWearScale = 0.08,
+	-- Overheat wear: extra wear per update when engine is at max temp
+	OverheatWearRate = 0.10,
+}
+
+-- Progressive failure: as EngineWear drops, engine performance degrades.
+Config.ProgressiveFailure = {
+	Enabled = true,
+	-- Wear threshold where max RPM starts dropping (below this, RPM cap decreases)
+	RPMCapStartWear = 75,
+	-- At 0 wear, max RPM is reduced to this fraction of normal (e.g., 0.35 = 35%)
+	RPMCapMinFraction = 0.35,
+	-- Wear threshold where power (throttle effectiveness) starts dropping
+	PowerDropStartWear = 60,
+	-- At 0 wear, throttle effectiveness is reduced to this fraction
+	PowerMinFraction = 0.30,
+	-- Wear threshold where misfires begin
+	MisfireStartWear = 50,
+	-- Misfire probability at 0 wear (per update cycle, 0-1)
+	MisfireMaxProbability = 0.35,
+	-- Misfire RPM drop range (fraction of current RPM lost during misfire)
+	MisfireRPMDropMin = 0.15,
+	MisfireRPMDropMax = 0.40,
+	-- Misfire duration in seconds
+	MisfireDuration = 0.3,
+}
+
+-- Engine failure: when EngineWear hits 0
+Config.EngineFailure = {
+	Enabled = true,
+	-- When true, engine cannot be restarted after failure until repaired
+	BlockRestartOnFailure = true,
 }
 
 Config.BatterySystem = {
@@ -93,20 +134,6 @@ Config.OilPressure = {
 	WarningThreshold = 18,
 	CriticalThreshold = 8,
 	WearPenaltyScale = 0.35,
-}
-
--- Exhaust pipe motion owned by this plugin.
--- Tag one or more exhaust assemblies, mark the main pipe section as Root and any additional
--- sections as Part, and the plugin will weld the parts to the root and apply a small
--- Motor6D-driven shake based on engine RPM.
-Config.ExhaustMotion = {
-	Enabled = true,
-	AmplitudeStuds = 0.015,
-	AmplitudeDegrees = 1.25,
-	FrequencyAtIdle = 10,
-	FrequencyAtRedline = 28,
-	Axis = "X",
-	RotateAxis = "Z",
 }
 
 return Config

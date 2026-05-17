@@ -828,7 +828,97 @@ for _, spec in ipairs(SPOTLIGHT_SPECS) do
 end
 
 --====================================================================
--- STEP 5 — INITIALIZE HANDLER MODULES
+-- STEP 5 — EXHAUST (anchor → break → unanchor)
+--====================================================================
+
+local exhaustTaggedSet = {}
+for _, tag in ipairs({"VOE_Exhaust_Root", "VOE_Exhaust_Part"}) do
+	for part in pairs(buildTaggedPartSet(tag)) do
+		exhaustTaggedSet[part] = true
+	end
+end
+
+if next(exhaustTaggedSet) then
+	for part in pairs(exhaustTaggedSet) do
+		if part:IsA("BasePart") then
+			part.Anchored = true
+			part.AssemblyLinearVelocity = Vector3.zero
+			part.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+
+	breakExternalWelds(exhaustTaggedSet)
+	breakWeldsTouching(exhaustTaggedSet)
+	for part in pairs(exhaustTaggedSet) do
+		if part:IsA("BasePart") then
+			breakWelds(part)
+		end
+	end
+
+	-- ③ REWELD ROOT ↔ PART
+	local exhaustRoots = getTagged("VOE_Exhaust_Root")
+	local exhaustParts = getTagged("VOE_Exhaust_Part")
+	for _, part in ipairs(exhaustParts) do
+		if part and part:IsA("BasePart") then
+			local closestRoot, minDist = nil, math.huge
+			for _, root in ipairs(exhaustRoots) do
+				if root and root:IsA("BasePart") and root ~= part then
+					local dist = (part.Position - root.Position).Magnitude
+					if dist < minDist then
+						minDist = dist
+						closestRoot = root
+					end
+				end
+			end
+			if closestRoot then
+				weld(closestRoot, part)
+			end
+		end
+	end
+
+	-- ④ CREATE MOTOR6D BETWEEN EXHAUST ROOT AND DRIVE SEAT
+	local seatAttachmentName = "VOE_ExhaustMotorPivot"
+	local seatAttachment = driveSeat:FindFirstChild(seatAttachmentName)
+	if not seatAttachment then
+		seatAttachment = Instance.new("Attachment")
+		seatAttachment.Name = seatAttachmentName
+		seatAttachment.Parent = driveSeat
+	end
+
+	for index, root in ipairs(exhaustRoots) do
+		if root and root:IsA("BasePart") then
+			local rootPivot = findAttachmentInRoot(root, "VOE_MotorPivot")
+			if not rootPivot then
+				rootPivot = Instance.new("Attachment")
+				rootPivot.Name = "VOE_MotorPivot"
+				rootPivot.WorldCFrame = root.CFrame
+				rootPivot.Parent = root
+			end
+
+			seatAttachment.WorldCFrame = rootPivot.WorldCFrame
+			local motorName = "VOE_ExhaustMotor_Exhaust" .. tostring(index)
+			local motor = root:FindFirstChild(motorName)
+			if not motor or not motor:IsA("Motor6D") then
+				motor = Instance.new("Motor6D")
+				motor.Name = motorName
+				motor.Part0 = driveSeat
+				motor.Part1 = root
+				motor.C0 = driveSeat.CFrame:ToObjectSpace(seatAttachment.WorldCFrame)
+				motor.C1 = root.CFrame:ToObjectSpace(rootPivot.WorldCFrame)
+				motor.Parent = root
+			end
+		end
+	end
+
+	for part in pairs(exhaustTaggedSet) do
+		if part:IsA("BasePart") then
+			part.Anchored = false
+		end
+	end
+end
+
+--====================================================================
+-- STEP 6 — INITIALIZE HANDLER MODULES
 --====================================================================
 
 local function safeRequire(moduleScript)
